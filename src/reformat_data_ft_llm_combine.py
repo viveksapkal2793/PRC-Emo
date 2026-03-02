@@ -42,7 +42,7 @@ def load_retrieval_library(retrieval_path):
     return index, metadata, vectors
 
 # 初始化检索库（全局只加载一次）
-RETRIEVAL_PATH = "./data/Emotion_Retrieval_Library_3.json"
+RETRIEVAL_PATH = "./data/Emotion_Retrieval_Library.json"
 print(f"使用的是：{RETRIEVAL_PATH}\n")
 retrieval_index, retrieval_metadata, retrieval_vectors = load_retrieval_library(RETRIEVAL_PATH)
 sentence_model = SentenceTransformer('all-MiniLM-L6-v2',device='cuda')  # 与检索库相同的向量模型
@@ -461,7 +461,15 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
     
     samples = []
     for i, sent in enumerate(new_conv):
-        system_msg = f'### You are an expert at analyzing the emotion of utterances among speakers in a conversation.\nYour goal is to infer the most accurate **emotion label** for a given utterance.\n'
+        system_msg = (
+            f'### You are an expert at analyzing the emotion of utterances among speakers in a conversation.\n'
+            f'Your goal is to infer the most accurate **emotion label** for a given utterance.\n\n'
+            
+            f'### CRITICAL INSTRUCTION:\n'
+            f'You MUST respond with ONLY the emotion label as a single word.\n'
+            f'Do NOT provide explanations, reasoning, thinking processes, or additional context.\n'
+            f'Do NOT use tags like <think>, </think>, arrows (→), or markdown formatting (###).\n\n'
+        )
         speaker_name = get_speaker_name(s_id, conv['speakers'][i] if data_name == "meld" else conv['genders'][i], data_name)
         raw_utterance = raw_utterances[i]  # 获取原始发言文本
         #得到隐性标签和情绪描述的特征描述
@@ -635,7 +643,7 @@ def process(paths_folder_preprocessed_data, args):
         #prompt 类型不是 "default"，则从指定文件中加载“说话人描述”
         if prompting_type not in ["default" ]:
             desc_speaker_data = json.load(open(f'{folder_data}/{data_name}.{d_type}_{prompting_type}_{extract_prompting_llm_id}.json'))
-            desc_speaker_data_2 = json.load(open(f'{folder_data}/{data_name}.{d_type}_spdescV6_Qwen3-14B.json'))
+            desc_speaker_data_2 = json.load(open(f'{folder_data}/{data_name}.{d_type}_spdescV6_qwen_3_14b.json'))
             processed_desc_speaker_data = {}
             #如果 prompt 类型中包含 "spdesc"，就用 preprocess_desc_speaker 函数对每条描述做预处理：
             if desc_speaker_data is not None and "spdescV2" == prompting_type:
@@ -761,8 +769,44 @@ def process(paths_folder_preprocessed_data, args):
             f.write("\n".join(new_format))
 
 
-# if __name__=="__main__":
-#     process('train', around_window=5, use_spdesc=True)
-#     process('test', around_window=5, use_spdesc=True)
-#     process('valid', around_window=5, use_spdesc=True)
+if __name__=="__main__":
+    import argparse
+    
+    # Create argument parser
+    parser = argparse.ArgumentParser(description='Reformat conversation data for LLM training')
+    parser.add_argument('--data_name', type=str, default='meld', 
+                        help='Dataset name: meld, iemocap, emorynlp, dailydialog')
+    parser.add_argument('--around_window', type=int, default=5, 
+                        help='Context window size')
+    parser.add_argument('--prompting_type', type=str, default='ImplicitEmotion_V3',
+                        help='Prompting type: default, spdescV2, ImplicitEmotion_V3, etc.')
+    parser.add_argument('--extract_prompting_llm_id', type=str, default='qwen_3_14b',
+                        help='LLM ID for speaker descriptions')
+    parser.add_argument('--data_folder', type=str, default='./data',
+                        help='Folder containing dataset files')
+    parser.add_argument('--re_gen_data', action='store_true',
+                        help='Force regenerate data even if exists')
+    
+    args = parser.parse_args()
+    
+    # Generate paths for train/valid/test
+    paths = [
+        f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.around_window}_{args.prompting_type}_{args.extract_prompting_llm_id}.jsonl"
+        for d_type in ['train', 'valid', 'test']
+    ]
+    
+    # Process all splits
+    print(f"\n{'='*80}")
+    print(f"Starting data generation with configuration:")
+    print(f"  Dataset: {args.data_name}")
+    print(f"  Window size: {args.around_window}")
+    print(f"  Prompting type: {args.prompting_type}")
+    print(f"  Output paths: {paths}")
+    print(f"{'='*80}\n")
+    
+    process(paths, args)
+    
+    print(f"\n{'='*80}")
+    print(f"✅ Data generation completed!")
+    print(f"{'='*80}\n")
 
