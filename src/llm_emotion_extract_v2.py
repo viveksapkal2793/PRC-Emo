@@ -12,7 +12,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, AutoConfig
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-dataset_name = 'iemocap'
+dataset_name = 'meld'
 data_folder = './data/'
 prompt_type = 'ImplicitEmotion_V3'
 
@@ -21,7 +21,7 @@ prompt_type = 'ImplicitEmotion_V3'
 print("Loading model ...")
 # trained with chat and instruction
 
-model_name = '/home/pubNAS3/xinran/llm/Qwen3-14B'  # standard model, please switch to your local model before running.
+model_name = '/scratch/data/bikash_rs/vivek/PRC-Emo/models/qwen_3_14b'  # standard model, please switch to your local model before running.
 tensor_data_type = torch.bfloat16
 
 bnb_config = BitsAndBytesConfig(

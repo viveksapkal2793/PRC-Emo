@@ -1,0 +1,8 @@
+logs/
+prc-emo-env/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+models/
+finetuned_llm/

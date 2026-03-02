@@ -27,7 +27,7 @@ prompt_type = 'spdescV6'
 
 print("Loading model ...")
 
-model_name = '/home/pubNAS3/xinran/llm/Qwen3-14B'  #  standard model, please switch to your local model before running.
+model_name = '/scratch/data/bikash_rs/vivek/PRC-Emo/models/qwen_3_14b'  #  standard model, please switch to your local model before running.
 tensor_data_type = torch.bfloat16
 
 bnb_config = BitsAndBytesConfig(

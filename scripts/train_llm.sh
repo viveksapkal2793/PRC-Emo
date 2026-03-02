@@ -1,3 +1,25 @@
+#!/bin/bash
+#SBATCH --job-name=train_prc_emo
+#SBATCH --output=/scratch/data/bikash_rs/vivek/PRC-Emo/logs/%x_%j.out
+#SBATCH --error=/scratch/data/bikash_rs/vivek/PRC-Emo/logs/%x_%j.err
+#SBATCH --partition=dgx
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=1-00:00:00
+#SBATCH --qos=fatqos
+#SBATCH -D /scratch/data/bikash_rs/vivek/PRC-Emo
+
+# Create logs directory
+mkdir -p logs
+
+# Load CUDA module (adjust version based on your system)
+# module load cuda/11.8
+
+# Activate virtual environment
+source prc-emo-env/bin/activate
 
 EP=4
 BN=2
@@ -32,10 +54,10 @@ WINDOW=5
 #spdescV6：100词的说话人性格，Qwen14b
 
 PROMPT_TYPE="ImplicitEmotion_V3" # spdescV2 | default | ImplicitEmotion | ImplicitEmotion_V2 | ImplicitEmotion_V2_byQwen3_14b | ImplicitEmotion_V3 | spdescV3 ｜spdescV6
-MODEL_ID="/usr/2Tusr/llm/Qwen2.5-7B-Instruct" # for iemocap. please switch to your own model path
-#MODEL_ID="/usr/2Tusr/llm/Qwen3-8B" # for meld. please switch to your own model path
-DATANAME="iemocap"   # iemocap | meld 
-EXTRACT_PROMTING_LLM_ID="Qwen3-14B"
+# MODEL_ID="/usr/2Tusr/llm/Qwen2.5-7B-Instruct" # for iemocap. please switch to your own model path
+MODEL_ID="/iitjhome/bikash_rs/vivek/models/qwen_3_8b" # for meld. please switch to your own model path
+DATANAME="meld"   # iemocap | meld 
+EXTRACT_PROMTING_LLM_ID="qwen_3_14b"
 MAX_SEQ_LEN=2048 
 MAX_STEPS=-1
 EVAL_DELAY=100000
@@ -44,9 +66,9 @@ EVAL_DELAY=100000
 IFS='/' read -ra ADDR <<< "$MODEL_ID"
 MODEL_ID_0=${ADDR[1]}
 
-for seed in 42 43 44 45 46;
+for seed in 42;
 do 
-python ./src/ft_llm_cl.py  --do_eval_dev --do_eval_test --do_train --curriculum --bucket_number ${BN} \
+python ./src/ft_llm_cl_copy.py  --do_eval_dev --do_eval_test --do_train --curriculum --bucket_number ${BN} \
  --base_model_id $MODEL_ID --curriculum_update_epochs ${CPE}\
  --ft_model_id  ${DATANAME}_${MODEL_ID_0}_ep${EP}_step${MAX_STEPS}_lrs-${LR_SCHEDULER}${LR}_${TOPK}shot_r${LORA_R}_w${WINDOW}_${PROMPT_TYPE}_seed${seed}_L${MAX_SEQ_LEN}_llmdesc${EXTRACT_PROMTING_LLM_ID}_ED${EVAL_DELAY} \
  --lr_scheduler $LR_SCHEDULER --lr $LR   --lora_r $LORA_R --max_steps $MAX_STEPS --epoch ${EP} \

@@ -131,7 +131,7 @@ if __name__ == "__main__":
         exit(1)
 
 
-    my_data_path = "sentence_label_data_with_emotion.json"
+    my_data_path = "/scratch/data/bikash_rs/vivek/PRC-Emo/sentence_label_data_with_emotion.json"
     my_samples = load_old_data_and_convert(my_data_path, dataset_name="my_data")
     all_samples = []
     all_samples.extend(my_samples)
