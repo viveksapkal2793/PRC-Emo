@@ -1,16 +1,16 @@
 #!/bin/bash
-#SBATCH --job-name=test_model_generation
-#SBATCH --output=/scratch/data/bikash_rs/vivek/PRC-Emo/logs/%x_%j.out
-#SBATCH --error=/scratch/data/bikash_rs/vivek/PRC-Emo/logs/%x_%j.err
+#SBATCH --job-name=preprocess_prc_emo
+#SBATCH --output=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.out
+#SBATCH --error=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.err
 #SBATCH --partition=dgx
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=1:00:00
+#SBATCH --time=6:00:00
 #SBATCH --qos=fatqos
-#SBATCH -D /scratch/data/bikash_rs/vivek/PRC-Emo
+#SBATCH -D /scratch/data/bikash_rs/Vivek/PRC-Emo
 
 # Create logs directory
 mkdir -p logs
@@ -21,13 +21,13 @@ mkdir -p logs
 # Activate virtual environment
 source prc-emo-env/bin/activate
 
-# python src/llm_emotion_extract_v2.py
+python src/llm_emotion_extract_v2.py
 
 # python src/llm_bio_extract_v2.py
 
 # python src/get_rag_final.py
 
-python test.py
+# python test.py
 
 # python src/reformat_data_ft_llm_combine.py \
 #     --data_name meld \

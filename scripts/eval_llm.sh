@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=eval_prc_emo
-#SBATCH --output=/scratch/data/bikash_rs/vivek/PRC-Emo/logs/%x_%j.out
-#SBATCH --error=/scratch/data/bikash_rs/vivek/PRC-Emo/logs/%x_%j.err
+#SBATCH --output=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.out
+#SBATCH --error=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.err
 #SBATCH --partition=dgx
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
@@ -10,7 +10,7 @@
 #SBATCH --mem=64G
 #SBATCH --time=8:00:00
 #SBATCH --qos=fatqos
-#SBATCH -D /scratch/data/bikash_rs/vivek/PRC-Emo
+#SBATCH -D /scratch/data/bikash_rs/Vivek/PRC-Emo
 
 # Create logs directory
 mkdir -p logs
@@ -22,13 +22,13 @@ mkdir -p logs
 source prc-emo-env/bin/activate
 
 # Model to evaluate
-MODEL_PATH="/scratch/data/bikash_rs/vivek/PRC-Emo/finetuned_llm/meld_iitjhome_ep4_step-1_lrs-linear3e-4_0shot_r32_w5_ImplicitEmotion_V3_seed42_L2048_llmdescqwen_3_14b_ED100000_final_full_finetune"
+MODEL_PATH="/scratch/data/bikash_rs/Vivek/PRC-Emo/finetuned_llm/meld_iitjhome_ep4_step-1_lrs-linear3e-4_0shot_r32_w5_ImplicitEmotion_V3_seed42_L2048_llmdescqwen_3_14b_ED100000_final_full_finetune"
 
 python ./src/ft_llm_cl_copy.py \
   --do_eval_test \
   --do_eval_dev \
   --ft_model_path ${MODEL_PATH} \
-  --base_model_id /iitjhome/bikash_rs/vivek/models/qwen_3_8b \
+  --base_model_id /iitjhome/bikash_rs/Vivek/models/qwen_3_8b \
   --data_name meld \
   --prompting_type ImplicitEmotion_V3 \
   --extract_prompting_llm_id qwen_3_14b \

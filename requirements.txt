@@ -11,3 +11,8 @@ scikit-learn
 flash-attn
 tensorboard
 tensorboardX
+transformers
+numpy
+tqdm
+faiss-gpu
+sentence-transformers
