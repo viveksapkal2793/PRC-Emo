@@ -21,7 +21,7 @@ prompt_type = 'ImplicitEmotion_V3'
 print("Loading model ...")
 # trained with chat and instruction
 
-model_name = '/scratch/data/bikash_rs/vivek/PRC-Emo/models/qwen_3_14b'  # standard model, please switch to your local model before running.
+model_name = '/scratch/data/bikash_rs/Vivek/PRC-Emo/models/qwen_3_14b'  # standard model, please switch to your local model before running.
 tensor_data_type = torch.bfloat16
 
 bnb_config = BitsAndBytesConfig(
