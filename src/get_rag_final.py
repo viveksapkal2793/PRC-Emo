@@ -10,7 +10,7 @@ from tqdm import tqdm
 # ======================
 try:
     print("Loading text encoding model...")
-    model = SentenceTransformer('all-MiniLM-L6-v2', device='cuda:0')  # 可自动下载或从缓存读取   Auto-download or load from cache
+    model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')  # 可自动下载或从缓存读取   Auto-download or load from cache
 except Exception as e:
     print(f"Failed to load the model. Please check your network connection or download the model manually.\nError: {str(e)}")
     model = None
@@ -131,7 +131,7 @@ if __name__ == "__main__":
         exit(1)
 
 
-    my_data_path = "/scratch/data/bikash_rs/vivek/PRC-Emo/sentence_label_data_with_emotion.json"
+    my_data_path = "/scratch/data/bikash_rs/Vivek/PRC-Emo/sentence_label_data_with_emotion.json"
     my_samples = load_old_data_and_convert(my_data_path, dataset_name="my_data")
     all_samples = []
     all_samples.extend(my_samples)
