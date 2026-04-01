@@ -45,7 +45,7 @@ def load_retrieval_library(retrieval_path):
 RETRIEVAL_PATH = "./data/Emotion_Retrieval_Library.json"
 print(f"使用的是：{RETRIEVAL_PATH}\n")
 retrieval_index, retrieval_metadata, retrieval_vectors = load_retrieval_library(RETRIEVAL_PATH)
-sentence_model = SentenceTransformer('all-MiniLM-L6-v2',device='cuda')  # 与检索库相同的向量模型
+sentence_model = SentenceTransformer('all-MiniLM-L6-v2',device='cpu')  # 与检索库相同的向量模型
 # === 新增：检索相似样本函数 ===
 def retrieve_similar_samples(query_text, current_id, d_type, k=3):
     """
@@ -465,10 +465,10 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
             f'### You are an expert at analyzing the emotion of utterances among speakers in a conversation.\n'
             f'Your goal is to infer the most accurate **emotion label** for a given utterance.\n\n'
             
-            f'### CRITICAL INSTRUCTION:\n'
-            f'You MUST respond with ONLY the emotion label as a single word.\n'
-            f'Do NOT provide explanations, reasoning, thinking processes, or additional context.\n'
-            f'Do NOT use tags like <think>, </think>, arrows (→), or markdown formatting (###).\n\n'
+            # f'### CRITICAL INSTRUCTION:\n'
+            # f'You MUST respond with ONLY the emotion label as a single word.\n'
+            # f'Do NOT provide explanations, reasoning, thinking processes, or additional context.\n'
+            # f'Do NOT use tags like <think>, </think>, arrows (→), or markdown formatting (###).\n\n'
         )
         speaker_name = get_speaker_name(s_id, conv['speakers'][i] if data_name == "meld" else conv['genders'][i], data_name)
         raw_utterance = raw_utterances[i]  # 获取原始发言文本
@@ -776,7 +776,7 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser(description='Reformat conversation data for LLM training')
     parser.add_argument('--data_name', type=str, default='meld', 
                         help='Dataset name: meld, iemocap, emorynlp, dailydialog')
-    parser.add_argument('--around_window', type=int, default=5, 
+    parser.add_argument('--window', type=int, default=5, 
                         help='Context window size')
     parser.add_argument('--prompting_type', type=str, default='ImplicitEmotion_V3',
                         help='Prompting type: default, spdescV2, ImplicitEmotion_V3, etc.')
@@ -791,7 +791,7 @@ if __name__=="__main__":
     
     # Generate paths for train/valid/test
     paths = [
-        f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.around_window}_{args.prompting_type}_{args.extract_prompting_llm_id}.jsonl"
+        f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}.jsonl"
         for d_type in ['train', 'valid', 'test']
     ]
     
@@ -799,7 +799,7 @@ if __name__=="__main__":
     print(f"\n{'='*80}")
     print(f"Starting data generation with configuration:")
     print(f"  Dataset: {args.data_name}")
-    print(f"  Window size: {args.around_window}")
+    print(f"  Window size: {args.window}")
     print(f"  Prompting type: {args.prompting_type}")
     print(f"  Output paths: {paths}")
     print(f"{'='*80}\n")
