@@ -55,7 +55,7 @@ WINDOW=5
 
 PROMPT_TYPE="ImplicitEmotion_V3" # spdescV2 | default | ImplicitEmotion | ImplicitEmotion_V2 | ImplicitEmotion_V2_byQwen3_14b | ImplicitEmotion_V3 | spdescV3 ｜spdescV6
 # MODEL_ID="/usr/2Tusr/llm/Qwen2.5-7B-Instruct" # for iemocap. please switch to your own model path
-MODEL_ID="/iitjhome/bikash_rs/Vivek/models/qwen_3_8b" # for meld. please switch to your own model path
+MODEL_ID="/scratch/data/bikash_rs/Vivek/PRC-Emo/models/qwen_3_8b" # for meld. please switch to your own model path
 DATANAME="meld"   # iemocap | meld 
 EXTRACT_PROMTING_LLM_ID="qwen_3_14b"
 MAX_SEQ_LEN=2048 
