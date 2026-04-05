@@ -425,7 +425,7 @@ if __name__=='__main__':
                 model = AutoModelForCausalLM.from_pretrained(
                     model_id,
                     device_map="auto",
-                    attn_implementation="flash_attention_2",
+                    # attn_implementation="flash_attention_2",
                     torch_dtype=tensor_data_type,
                     quantization_config=bnb_config
                 )
@@ -716,7 +716,7 @@ if __name__=='__main__':
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             device_map="auto",
-            attn_implementation="flash_attention_2",
+            # attn_implementation="flash_attention_2",
             torch_dtype=tensor_data_type,
             quantization_config=bnb_config
         )

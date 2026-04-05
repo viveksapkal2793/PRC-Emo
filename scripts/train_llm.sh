@@ -68,7 +68,7 @@ MODEL_ID_0=${ADDR[1]}
 
 for seed in 42;
 do 
-python ./src/ft_llm_cl_copy.py  --do_eval_dev --do_eval_test --do_train --curriculum --bucket_number ${BN} \
+python ./src/ft_llm_cl_original.py  --do_eval_dev --do_eval_test --do_train --curriculum --bucket_number ${BN} \
  --base_model_id $MODEL_ID --curriculum_update_epochs ${CPE}\
  --ft_model_id  ${DATANAME}_${MODEL_ID_0}_ep${EP}_step${MAX_STEPS}_lrs-${LR_SCHEDULER}${LR}_${TOPK}shot_r${LORA_R}_w${WINDOW}_${PROMPT_TYPE}_seed${seed}_L${MAX_SEQ_LEN}_llmdesc${EXTRACT_PROMTING_LLM_ID}_ED${EVAL_DELAY} \
  --lr_scheduler $LR_SCHEDULER --lr $LR   --lora_r $LORA_R --max_steps $MAX_STEPS --epoch ${EP} \

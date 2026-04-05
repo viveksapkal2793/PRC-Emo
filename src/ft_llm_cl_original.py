@@ -425,7 +425,7 @@ if __name__=='__main__':
                 model = AutoModelForCausalLM.from_pretrained(
                     model_id,
                     device_map="auto",
-                    attn_implementation="flash_attention_2",
+                    # attn_implementation="flash_attention_2",
                     torch_dtype=tensor_data_type,
                     quantization_config=bnb_config
                 )
@@ -709,6 +709,47 @@ if __name__=='__main__':
             print(f"\nCurriculum training completed. Final model saved to: {final_phase_dir}")
             ft_model_path = final_phase_dir
 
+        print("\n" + "="*50)
+        print("Cleaning up intermediate phase directories...")
+        print("="*50)
+        
+        # Use glob to find all phase directories safely
+        phase_pattern = f"{base_output_dir}_phase_*"
+        phase_dirs = glob.glob(phase_pattern)
+        
+        print(f"Found {len(phase_dirs)} phase directories to delete:")
+        for phase_dir in sorted(phase_dirs):
+            print(f"  - {phase_dir}")
+        
+        for phase_dir in phase_dirs:
+            try:
+                shutil.rmtree(phase_dir)
+                print(f" Deleted {phase_dir}")
+            except Exception as e:
+                print(f" Failed to delete {phase_dir}: {e}")
+        
+        # Delete offload folder if it exists
+        offload_folder = os.path.join(base_output_dir, "offload")
+        if os.path.exists(offload_folder):
+            try:
+                shutil.rmtree(offload_folder)
+                print(f" Deleted offload folder")
+            except Exception as e:
+                print(f" Failed to delete offload folder: {e}")
+        
+        # Show final structure
+        print(f"\n Training complete!")
+        print(f"Final model checkpoint: {ft_model_path}")
+        print(f"Remaining directories in {args.output_folder}:")
+        for item in os.listdir(args.output_folder):
+            item_path = os.path.join(args.output_folder, item)
+            if os.path.isdir(item_path):
+                size = sum(os.path.getsize(os.path.join(dirpath,filename)) 
+                        for dirpath, dirnames, filenames in os.walk(item_path) 
+                        for filename in filenames)
+                print(f"  - {item} ({size/1e9:.2f} GB)")
+        print("="*50)
+
     # 非课程学习训练
     elif args.do_train:
         print("Starting standard training without curriculum learning")
@@ -716,7 +757,7 @@ if __name__=='__main__':
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             device_map="auto",
-            attn_implementation="flash_attention_2",
+            # attn_implementation="flash_attention_2",
             torch_dtype=tensor_data_type,
             quantization_config=bnb_config
         )
