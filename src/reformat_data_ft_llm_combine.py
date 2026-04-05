@@ -156,6 +156,25 @@ def preprocess_desc_speaker(str_in):
     str_in = str_in.split("</s>")[0].replace("<s>", "").replace("\n", " ")
     str_out = re.sub(r" {2,}", " ",  str_in)
     return str_out
+
+def load_dialogue_visual_expressions(folder_data, d_type):
+    """Load split-specific OpenFace visual expression annotations if available."""
+    split_name_map = {
+        "train": "train",
+        "valid": "dev",
+        "test": "test",
+    }
+    split_name = split_name_map.get(d_type)
+    if split_name is None:
+        return {}
+
+    visual_path = os.path.join(folder_data, f"{split_name}_dialogue_visual_expressions.json")
+    if not os.path.exists(visual_path):
+        print(f" Visual expression file not found: {visual_path}")
+        return {}
+
+    with open(visual_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 #生成多轮对话标注任务输入
 def gen_default_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data=None):
     new_conv = []   #用于保存“说话人名 + 语句”的格式化对话。
@@ -447,7 +466,7 @@ def gen_ImplicitEmotion_V2_prompting_messages(data_name, conv, around_window, s_
         
     return samples 
 
-def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type):
+def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None):
     new_conv = []
     raw_utterances = conv['sentences']  # 新增：保存原始发言
     for i,sent in enumerate(conv['sentences']):
@@ -505,7 +524,20 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
             f"- {desc2}\n"
         )
         desc_msg_2 = f'\n### Given the characteristic of this speaker: {desc_info_msg}\n'
-        
+        visual_expression_msg = ""
+        if visual_expression_data is not None:
+            visual_info = visual_expression_data.get(str(s_id), {})
+            visual_expressions = visual_info.get("visual_expressions", [])
+            current_visual_expression = (
+                visual_expressions[i]
+                if i < len(visual_expressions)
+                else None
+            )
+            if current_visual_expression:
+                visual_expression_msg = (
+                    "\n### Visual Expressions of the speaker present in this utterance:\n"
+                    f"- {current_visual_expression}\n"
+                )
 
         conv_str = "\n".join(flatten_conv[i])
         local_context_msg = (f"\n### Given the following conversation as a context \n{conv_str}\n"
@@ -515,12 +547,12 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         labels_msg = f"### Available emotion labels: {', '.join(emotion_labels)}\n\n"
         
 
-        q_msg =  f'Based on above conversation, similar emotional expressions, Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\".'
+        q_msg =  f'Based on above conversation, visual expressions, similar emotional expressions, Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\".'
         label_msg = get_label_map(data_name)[conv['labels'][i]]
         
         samples.append({
             "messages":  [
-                {'role': "system", 'content': system_msg + note  + local_context_msg + desc_msg_2 + desc_msg + implicit_info_msg + demonstration_str + labels_msg},
+                {'role': "system", 'content': system_msg + note  + local_context_msg + visual_expression_msg + desc_msg_2 + desc_msg + implicit_info_msg + demonstration_str + labels_msg},
                 {'role': "user", 'content': q_msg},
                 {'role': "assistant", 'content': label_msg},
             ]
@@ -636,6 +668,7 @@ def process(paths_folder_preprocessed_data, args):
         
         raw_data = f'{folder_data}/{data_name}.{d_type}.json'
         org_data = json.load(open(raw_data)) # ; org_data = dict([(k,v) for k,v in org_data.items()][:10])
+        visual_expression_data = load_dialogue_visual_expressions(folder_data, d_type) if prompting_type == 'ImplicitEmotion_V3' else None
         
         new_format = []
         
@@ -746,8 +779,18 @@ def process(paths_folder_preprocessed_data, args):
         #遍历原始数据中的每条对话
         for s_id, conv in org_data.items(): 
            # 根据不同的prompting_type构造不同的参数
-            if prompting_type in ['ImplicitEmotion_V3', 'spdescV3','spdescV4', 'spdescV5']:
-                # ImplicitEmotion_V3需要额外的retrieval_library和d_type参数
+            if prompting_type == 'ImplicitEmotion_V3':
+                samples = process_func(
+                    data_name,
+                    conv,
+                    around_window,
+                    s_id,
+                    desc_speaker_data,
+                    None,
+                    d_type,
+                    visual_expression_data,
+                )
+            elif prompting_type in ['spdescV3', 'spdescV4', 'spdescV5']:
                 samples = process_func(data_name, conv, around_window, s_id, desc_speaker_data, None, d_type)
             else:
                 # 其他函数使用标准参数
@@ -791,7 +834,7 @@ if __name__=="__main__":
     
     # Generate paths for train/valid/test
     paths = [
-        f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}.jsonl"
+        f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}_Vis.jsonl"
         for d_type in ['train', 'valid', 'test']
     ]
     
@@ -809,4 +852,3 @@ if __name__=="__main__":
     print(f"\n{'='*80}")
     print(f"✅ Data generation completed!")
     print(f"{'='*80}\n")
-
