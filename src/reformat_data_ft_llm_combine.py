@@ -175,6 +175,25 @@ def load_dialogue_visual_expressions(folder_data, d_type):
 
     with open(visual_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+def load_dialogue_audio_descriptions(folder_data, d_type):
+    """Load split-specific audio description annotations if available."""
+    split_name_map = {
+        "train": "train",
+        "valid": "dev",
+        "test": "test",
+    }
+    split_name = split_name_map.get(d_type)
+    if split_name is None:
+        return {}
+
+    audio_path = os.path.join(folder_data, f"opensmile_{split_name}_features_audio_descriptions.json")
+    if not os.path.exists(audio_path):
+        print(f" Audio description file not found: {audio_path}")
+        return {}
+
+    with open(audio_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 #生成多轮对话标注任务输入
 def gen_default_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data=None):
     new_conv = []   #用于保存“说话人名 + 语句”的格式化对话。
@@ -466,7 +485,7 @@ def gen_ImplicitEmotion_V2_prompting_messages(data_name, conv, around_window, s_
         
     return samples 
 
-def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None):
+def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None, audio_description_data=None):
     new_conv = []
     raw_utterances = conv['sentences']  # 新增：保存原始发言
     for i,sent in enumerate(conv['sentences']):
@@ -512,8 +531,12 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
                 #f"(from {sample['dataset']}, similarity: {sample['similarity']:.2f})\n"
             )
         demonstration_str += "\n"
-        note = "Note: *Explicit Emotion* refers to the emotional state that a person outwardly expresses through their words, tone, facial expressions, or behavior. It is typically visible and can be directly perceived by others. For instance, someone loudly complaining might show a surface emotion of frustration or annoyance.\n*Implicit Emotion*, on the other hand, is the underlying emotional tendency that may not be directly expressed but can be inferred through context, common sense reasoning, or deeper understanding of the speaker’s situation. These emotions often reflect the speaker’s true feelings. \n"
-        desc_msg = f'\n### Given the speaker’s Explicit Emotion Interpretation and Implicit Emotion Interpretation in the utterance \"{conv["sentences"][i]}\":'
+        note = ("Note: *Explicit Emotion* refers to the emotional state that a person outwardly expresses through their words, tone, facial expressions, or behavior. It is typically visible and can be directly perceived by others. For instance, someone loudly complaining might show a surface emotion of frustration or annoyance.\n"
+                "*Implicit Emotion*, on the other hand, is the underlying emotional tendency that may not be directly expressed but can be inferred through context, common sense reasoning, or deeper understanding of the speaker's situation. These emotions often reflect the speaker's true feelings.\n"
+                "*Visual Expressions* refer to the non-verbal and facial cues displayed by the speaker, such as eye, eyebrow, cheek, lips and mouth movements. These expressions often correlate with and can reinforce the emotional state being conveyed.\n"
+                "*Audio Descriptions* refer to prosodic features of the speaker's utterance, including pitch, variability, energy, voice stability, tone quality, and background noise. These acoustic characteristics provide additional cues about the speaker's emotional state and delivery style.\n")
+        
+        desc_msg = f"\n### Given the speaker's Explicit Emotion Interpretation and Implicit Emotion Interpretation in the utterance \'{conv['sentences'][i]}\':"
         implicit_info_msg = (
             f"\n### Speaker: {speaker_name}\n"
             f"- Explicit Emotion Interpretation: {emotion_surface}\n"
@@ -539,6 +562,21 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
                     f"- {current_visual_expression}\n"
                 )
 
+        audio_description_msg = ""
+        if audio_description_data is not None:
+            audio_info = audio_description_data.get(str(s_id), {})
+            audio_descriptions = audio_info.get("audio_descriptions", [])
+            current_audio_description = (
+                audio_descriptions[i]
+                if i < len(audio_descriptions)
+                else None
+            )
+            if current_audio_description:
+                audio_description_msg = (
+                    "\n### Audio Characteristics of the speaker present in this utterance:\n"
+                    f"- {current_audio_description}\n"
+                )
+
         conv_str = "\n".join(flatten_conv[i])
         local_context_msg = (f"\n### Given the following conversation as a context \n{conv_str}\n"
                              )
@@ -546,13 +584,15 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         emotion_labels = get_label_map(data_name)
         labels_msg = f"### Available emotion labels: {', '.join(emotion_labels)}\n\n"
         
-
-        q_msg =  f'Based on above conversation, visual expressions, similar emotional expressions, Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\".'
+        q_msg = (f'Based on above conversation, visual expressions, audio characteristics, similar emotional expressions, '
+                 f'Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, '
+                 f'which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\".')
+        
         label_msg = get_label_map(data_name)[conv['labels'][i]]
         
         samples.append({
             "messages":  [
-                {'role': "system", 'content': system_msg + note  + local_context_msg + visual_expression_msg + desc_msg_2 + desc_msg + implicit_info_msg + demonstration_str + labels_msg},
+                {'role': "system", 'content': system_msg + note + local_context_msg + visual_expression_msg + audio_description_msg + desc_msg_2 + desc_msg + implicit_info_msg + demonstration_str + labels_msg},
                 {'role': "user", 'content': q_msg},
                 {'role': "assistant", 'content': label_msg},
             ]
@@ -669,6 +709,7 @@ def process(paths_folder_preprocessed_data, args):
         raw_data = f'{folder_data}/{data_name}.{d_type}.json'
         org_data = json.load(open(raw_data)) # ; org_data = dict([(k,v) for k,v in org_data.items()][:10])
         visual_expression_data = load_dialogue_visual_expressions(folder_data, d_type) if prompting_type == 'ImplicitEmotion_V3' else None
+        audio_description_data = load_dialogue_audio_descriptions(folder_data, d_type) if prompting_type == 'ImplicitEmotion_V3' else None
         
         new_format = []
         
@@ -789,6 +830,7 @@ def process(paths_folder_preprocessed_data, args):
                     None,
                     d_type,
                     visual_expression_data,
+                    audio_description_data
                 )
             elif prompting_type in ['spdescV3', 'spdescV4', 'spdescV5']:
                 samples = process_func(data_name, conv, around_window, s_id, desc_speaker_data, None, d_type)
@@ -834,7 +876,7 @@ if __name__=="__main__":
     
     # Generate paths for train/valid/test
     paths = [
-        f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}_Vis.jsonl"
+        f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}_Aud_Vis.jsonl"
         for d_type in ['train', 'valid', 'test']
     ]
     
