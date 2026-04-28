@@ -194,6 +194,68 @@ def load_dialogue_audio_descriptions(folder_data, d_type):
 
     with open(audio_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+def _wrap_text_message(role, text):
+    return {"role": role, "content": [{"type": "text", "text": text}]}
+
+def _build_meld_media_paths(s_id, utter_idx, multimodal_config, d_type):
+    if multimodal_config is None:
+        return None, None
+
+    video_dir_map = {
+        "train": multimodal_config.get("meld_train_video_dir"),
+        "valid": multimodal_config.get("meld_valid_video_dir"),
+        "test": multimodal_config.get("meld_test_video_dir"),
+    }
+    audio_dir_map = {
+        "train": multimodal_config.get("meld_train_audio_dir"),
+        "valid": multimodal_config.get("meld_valid_audio_dir"),
+        "test": multimodal_config.get("meld_test_audio_dir"),
+    }
+
+    video_dir = video_dir_map.get(d_type)
+    audio_dir = audio_dir_map.get(d_type)
+    base_name = f"dia{s_id}_utt{utter_idx}"
+
+    video_path = os.path.join(video_dir, f"{base_name}.mp4") if video_dir else None
+    audio_path = os.path.join(audio_dir, f"{base_name}.wav") if audio_dir else None
+
+    if video_path and not os.path.exists(video_path):
+        video_path = None
+    if audio_path and not os.path.exists(audio_path):
+        audio_path = None
+
+    return video_path, audio_path
+
+def _build_multimodal_messages(system_msg, user_msg, label_msg, video_path=None, audio_path=None):
+    user_content = []
+    if video_path:
+        user_content.append({"type": "video", "video": video_path})
+    if audio_path:
+        user_content.append({"type": "audio", "audio": audio_path})
+    user_content.append({"type": "text", "text": user_msg})
+
+    return [
+        _wrap_text_message("system", system_msg),
+        {"role": "user", "content": user_content},
+        _wrap_text_message("assistant", label_msg),
+    ]
+
+def _format_feature_list(use_visual_exp=False, use_audio_exp=False):
+    features = []
+    if use_visual_exp:
+        features.append("visual expressions")
+    if use_audio_exp:
+        features.append("audio characteristics")
+    return features
+
+def _join_prompt_features(features):
+    if not features:
+        return ""
+    if len(features) == 1:
+        return features[0]
+    return ", ".join(features[:-1]) + f", and {features[-1]}"
+
 #生成多轮对话标注任务输入
 def gen_default_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data=None):
     new_conv = []   #用于保存“说话人名 + 语句”的格式化对话。
@@ -485,9 +547,12 @@ def gen_ImplicitEmotion_V2_prompting_messages(data_name, conv, around_window, s_
         
     return samples 
 
-def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None, audio_description_data=None):
+def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None, audio_description_data=None, multimodal_config=None):
     new_conv = []
     raw_utterances = conv['sentences']  # 新增：保存原始发言
+    use_multimodal_chat = bool(multimodal_config and multimodal_config.get("multimodal_chat_format"))
+    use_visual_exp = bool(multimodal_config and multimodal_config.get("use_visual_exp"))
+    use_audio_exp = bool(multimodal_config and multimodal_config.get("use_audio_exp"))
     for i,sent in enumerate(conv['sentences']):
         param = conv['speakers'][i] if data_name == "meld" else conv['genders'][i]
         sent_name = get_speaker_name(s_id, param, data_name)
@@ -532,9 +597,21 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
             )
         demonstration_str += "\n"
         note = ("Note: *Explicit Emotion* refers to the emotional state that a person outwardly expresses through their words, tone, facial expressions, or behavior. It is typically visible and can be directly perceived by others. For instance, someone loudly complaining might show a surface emotion of frustration or annoyance.\n"
-                "*Implicit Emotion*, on the other hand, is the underlying emotional tendency that may not be directly expressed but can be inferred through context, common sense reasoning, or deeper understanding of the speaker's situation. These emotions often reflect the speaker's true feelings.\n"
+                "*Implicit Emotion*, on the other hand, is the underlying emotional tendency that may not be directly expressed but can be inferred through context, common sense reasoning, or deeper understanding of the speaker's situation. These emotions often reflect the speaker's true feelings.\n")
+        if use_visual_exp:
+            note += (
                 "*Visual Expressions* refer to the non-verbal and facial cues displayed by the speaker, such as eye, eyebrow, cheek, lips and mouth movements. These expressions often correlate with and can reinforce the emotional state being conveyed.\n"
-                "*Audio Descriptions* refer to prosodic features of the speaker's utterance, including pitch, variability, energy, voice stability, tone quality, and background noise. These acoustic characteristics provide additional cues about the speaker's emotional state and delivery style.\n")
+            )
+        if use_audio_exp:
+            note += (
+                "*Audio Descriptions* refer to prosodic features of the speaker's utterance, including pitch, variability, energy, voice stability, tone quality, and background noise. These acoustic characteristics provide additional cues about the speaker's emotional state and delivery style.\n"
+            )
+        if use_multimodal_chat:
+            note += (
+                "*Multimodal Input Instruction* A video clip and a separately extracted audio clip of the current target utterance may be provided together with the transcript-based context. "
+                "Use the transcript, facial expressions, visible actions, and prosodic cues jointly. If different modalities conflict, prioritize the evidence that is most directly tied to the current speaker's target utterance. "
+                "Do not mention the modalities in the final answer. Return only one emotion label from the available set.\n"
+            )
         
         desc_msg = f"\n### Given the speaker's Explicit Emotion Interpretation and Implicit Emotion Interpretation in the utterance \'{conv['sentences'][i]}\':"
         implicit_info_msg = (
@@ -548,7 +625,7 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         )
         desc_msg_2 = f'\n### Given the characteristic of this speaker: {desc_info_msg}\n'
         visual_expression_msg = ""
-        if visual_expression_data is not None:
+        if use_visual_exp and visual_expression_data is not None:
             visual_info = visual_expression_data.get(str(s_id), {})
             visual_expressions = visual_info.get("visual_expressions", [])
             current_visual_expression = (
@@ -563,7 +640,7 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
                 )
 
         audio_description_msg = ""
-        if audio_description_data is not None:
+        if use_audio_exp and audio_description_data is not None:
             audio_info = audio_description_data.get(str(s_id), {})
             audio_descriptions = audio_info.get("audio_descriptions", [])
             current_audio_description = (
@@ -583,20 +660,57 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         
         emotion_labels = get_label_map(data_name)
         labels_msg = f"### Available emotion labels: {', '.join(emotion_labels)}\n\n"
-        
-        q_msg = (f'Based on above conversation, visual expressions, audio characteristics, similar emotional expressions, '
-                 f'Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, '
-                 f'which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\".')
+        enabled_prompt_features = _format_feature_list(
+            use_visual_exp=use_visual_exp,
+            use_audio_exp=use_audio_exp,
+        )
+        prompt_feature_text = _join_prompt_features(enabled_prompt_features)
+        prompt_feature_prefix = f"{prompt_feature_text}, " if prompt_feature_text else ""
+
+        if use_multimodal_chat:
+            q_msg = (f'Based on the conversation context, the target utterance video clip, the separately provided audio clip, '
+                     f'{prompt_feature_prefix}similar emotional expressions, '
+                     f'Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, '
+                     f'which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\"? '
+                     f'Respond with only one label from the available emotion labels.')
+        else:
+            q_msg = (f'Based on above conversation, {prompt_feature_prefix}similar emotional expressions, '
+                     f'Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, '
+                     f'which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\".')
         
         label_msg = get_label_map(data_name)[conv['labels'][i]]
-        
-        samples.append({
-            "messages":  [
-                {'role': "system", 'content': system_msg + note + local_context_msg + visual_expression_msg + audio_description_msg + desc_msg_2 + desc_msg + implicit_info_msg + demonstration_str + labels_msg},
+
+        video_path = None
+        audio_path = None
+        if use_multimodal_chat and data_name == "meld":
+            video_path, audio_path = _build_meld_media_paths(s_id, i, multimodal_config, d_type)
+
+        full_system_msg = system_msg + note + local_context_msg + visual_expression_msg + audio_description_msg + desc_msg_2 + desc_msg + implicit_info_msg + demonstration_str + labels_msg
+        if use_multimodal_chat:
+            messages = _build_multimodal_messages(
+                full_system_msg,
+                q_msg,
+                label_msg,
+                video_path=video_path,
+                audio_path=audio_path,
+            )
+        else:
+            messages = [
+                {'role': "system", 'content': full_system_msg},
                 {'role': "user", 'content': q_msg},
                 {'role': "assistant", 'content': label_msg},
             ]
-        })
+
+        sample = {
+            "messages": messages,
+            "conversation_id": str(s_id),
+            "utterance_id": i,
+        }
+        if video_path is not None:
+            sample["video_path"] = video_path
+        if audio_path is not None:
+            sample["audio_path"] = audio_path
+        samples.append(sample)
         
     return samples 
 
@@ -685,6 +799,17 @@ def calculate_difficulty(dialog_data, emotionmap, matrix, emotion_to_index, data
 def process(paths_folder_preprocessed_data, args):
     
     process_kwargs = {}
+    multimodal_config = {
+        "multimodal_chat_format": getattr(args, "multimodal_chat_format", False),
+        "use_visual_exp": getattr(args, "use_visual_exp", False),
+        "use_audio_exp": getattr(args, "use_audio_exp", False),
+        "meld_train_video_dir": getattr(args, "meld_train_video_dir", None),
+        "meld_valid_video_dir": getattr(args, "meld_valid_video_dir", None),
+        "meld_test_video_dir": getattr(args, "meld_test_video_dir", None),
+        "meld_train_audio_dir": getattr(args, "meld_train_audio_dir", None),
+        "meld_valid_audio_dir": getattr(args, "meld_valid_audio_dir", None),
+        "meld_test_audio_dir": getattr(args, "meld_test_audio_dir", None),
+    }
     #paths_folder_preprocessed_data: 一个列表，包含预处理数据的路径
     for path_folder_preprocessed_data in paths_folder_preprocessed_data:
         
@@ -708,8 +833,16 @@ def process(paths_folder_preprocessed_data, args):
         
         raw_data = f'{folder_data}/{data_name}.{d_type}.json'
         org_data = json.load(open(raw_data)) # ; org_data = dict([(k,v) for k,v in org_data.items()][:10])
-        visual_expression_data = load_dialogue_visual_expressions(folder_data, d_type) if prompting_type == 'ImplicitEmotion_V3' else None
-        audio_description_data = load_dialogue_audio_descriptions(folder_data, d_type) if prompting_type == 'ImplicitEmotion_V3' else None
+        visual_expression_data = (
+            load_dialogue_visual_expressions(folder_data, d_type)
+            if prompting_type == 'ImplicitEmotion_V3' and multimodal_config["use_visual_exp"]
+            else None
+        )
+        audio_description_data = (
+            load_dialogue_audio_descriptions(folder_data, d_type)
+            if prompting_type == 'ImplicitEmotion_V3' and multimodal_config["use_audio_exp"]
+            else None
+        )
         
         new_format = []
         
@@ -830,7 +963,8 @@ def process(paths_folder_preprocessed_data, args):
                     None,
                     d_type,
                     visual_expression_data,
-                    audio_description_data
+                    audio_description_data,
+                    multimodal_config
                 )
             elif prompting_type in ['spdescV3', 'spdescV4', 'spdescV5']:
                 samples = process_func(data_name, conv, around_window, s_id, desc_speaker_data, None, d_type)
@@ -871,12 +1005,37 @@ if __name__=="__main__":
                         help='Folder containing dataset files')
     parser.add_argument('--re_gen_data', action='store_true',
                         help='Force regenerate data even if exists')
+    parser.add_argument('--multimodal_chat_format', action='store_true',
+                        help='Emit Qwen2.5 Omni style structured message content and media paths')
+    parser.add_argument('--use_audio_exp', action='store_true',
+                        help='Include audio-description features in the text prompt when available')
+    parser.add_argument('--use_visual_exp', action='store_true',
+                        help='Include visual-expression features in the text prompt when available')
+    parser.add_argument('--meld_train_video_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/train_splits',
+                        help='MELD train video directory')
+    parser.add_argument('--meld_valid_video_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/dev_splits_complete',
+                        help='MELD valid video directory')
+    parser.add_argument('--meld_test_video_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/output_repeated_splits_test',
+                        help='MELD test video directory')
+    parser.add_argument('--meld_train_audio_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD_audio/train',
+                        help='MELD train audio directory')
+    parser.add_argument('--meld_valid_audio_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD_audio/dev',
+                        help='MELD valid audio directory')
+    parser.add_argument('--meld_test_audio_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD_audio/test',
+                        help='MELD test audio directory')
     
     args = parser.parse_args()
     
     # Generate paths for train/valid/test
+    feature_suffix_parts = []
+    if args.use_audio_exp:
+        feature_suffix_parts.append("Aud")
+    if args.use_visual_exp:
+        feature_suffix_parts.append("Vis")
+    feature_suffix = "_" + "_".join(feature_suffix_parts) if feature_suffix_parts else ""
+    output_suffix = f"{feature_suffix}_Omni.jsonl" if args.multimodal_chat_format else f"{feature_suffix}.jsonl"
     paths = [
-        f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}_Aud_Vis.jsonl"
+        f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}{output_suffix}"
         for d_type in ['train', 'valid', 'test']
     ]
     
