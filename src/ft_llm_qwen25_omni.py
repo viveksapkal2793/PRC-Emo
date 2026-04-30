@@ -468,7 +468,7 @@ class MultimodalTrainer(Trainer):
 
         print(set(all_preds))
         print(set(all_labels))
-        print(classification_report(all_labels, all_preds, digits=4))
+        print(classification_report(all_labels, all_preds, digits=4, zero_division=0))
 
         metrics = {
             f"{metric_key_prefix}_weighted-f1": f1_weighted,
@@ -605,6 +605,9 @@ def maybe_generate_data(data_paths, args):
 
 
 def save_results_json(result_path, key, metrics):
+    result_dir = os.path.dirname(result_path)
+    if result_dir:
+        os.makedirs(result_dir, exist_ok=True)
     if os.path.exists(result_path):
         with open(result_path, "r", encoding="utf-8") as f:
             all_results = json.load(f)
