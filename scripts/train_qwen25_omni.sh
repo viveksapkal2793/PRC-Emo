@@ -85,7 +85,7 @@ python ./src/ft_llm_qwen25_omni.py --do_eval_dev --do_eval_test --do_train --cur
  --seed $seed --max_seq_len $MAX_SEQ_LEN --eval_delay $EVAL_DELAY --data_folder ./data/ \
  --video_fps $VIDEO_FPS --generation_max_new_tokens $GENERATION_MAX_NEW_TOKENS \
  --per_device_train_batch_size $PER_DEVICE_TRAIN_BATCH_SIZE --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
- --optim $OPTIM \
+ --optim $OPTIM --skip_invalid_media \
  --meld_train_video_dir $MELD_TRAIN_VIDEO_DIR --meld_valid_video_dir $MELD_VALID_VIDEO_DIR --meld_test_video_dir $MELD_TEST_VIDEO_DIR \
  --meld_train_audio_dir $MELD_TRAIN_AUDIO_DIR --meld_valid_audio_dir $MELD_VALID_AUDIO_DIR --meld_test_audio_dir $MELD_TEST_AUDIO_DIR
 done
