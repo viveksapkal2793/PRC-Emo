@@ -10,9 +10,11 @@ import json
 import random
 import shutil
 import warnings
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
+import av
 from lightning import seed_everything
 from peft import LoraConfig, PeftConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from sklearn.metrics import accuracy_score, classification_report, f1_score
@@ -102,7 +104,121 @@ class JsonlMessageDataset(TorchDataset):
         return self.records[idx]
 
 
-def load_jsonl_dataset(path):
+def iter_media_paths_from_content(content) -> Iterable[Tuple[str, str]]:
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "video" and item.get("video"):
+                yield "video", item["video"]
+            elif item.get("type") == "audio" and item.get("audio"):
+                yield "audio", item["audio"]
+
+
+def extract_media_paths(sample) -> List[Tuple[str, str]]:
+    media_paths = []
+    for message in sample.get("messages", []):
+        media_paths.extend(iter_media_paths_from_content(message.get("content")))
+    if sample.get("video_path"):
+        media_paths.append(("video", sample["video_path"]))
+    if sample.get("audio_path"):
+        media_paths.append(("audio", sample["audio_path"]))
+
+    deduped = []
+    seen = set()
+    for media_type, media_path in media_paths:
+        key = (media_type, media_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped
+
+
+def validate_video_file(video_path: str, media_cache: dict) -> Tuple[bool, Optional[str]]:
+    cache_key = ("video", video_path)
+    if cache_key in media_cache:
+        return media_cache[cache_key]
+
+    if not os.path.exists(video_path):
+        result = (False, f"missing video file: {video_path}")
+        media_cache[cache_key] = result
+        return result
+
+    try:
+        container = av.open(video_path)
+        container.close()
+        result = (True, None)
+    except Exception as exc:
+        result = (False, f"{type(exc).__name__}: {exc}")
+
+    media_cache[cache_key] = result
+    return result
+
+
+def validate_audio_file(audio_path: str, media_cache: dict) -> Tuple[bool, Optional[str]]:
+    cache_key = ("audio", audio_path)
+    if cache_key in media_cache:
+        return media_cache[cache_key]
+
+    if not os.path.exists(audio_path):
+        result = (False, f"missing audio file: {audio_path}")
+    else:
+        result = (True, None)
+
+    media_cache[cache_key] = result
+    return result
+
+
+def filter_invalid_media_records(records, split_name: str, validate_media: bool = True, media_cache: Optional[dict] = None):
+    if not validate_media:
+        return records
+
+    media_cache = media_cache if media_cache is not None else {}
+    filtered_records = []
+    skipped_records = []
+
+    for sample in records:
+        sample_media = extract_media_paths(sample)
+        is_valid = True
+        failure_reason = None
+
+        for media_type, media_path in sample_media:
+            if media_type == "video":
+                valid, reason = validate_video_file(media_path, media_cache)
+            else:
+                valid, reason = validate_audio_file(media_path, media_cache)
+
+            if not valid:
+                is_valid = False
+                failure_reason = f"{media_type} {reason}"
+                break
+
+        if is_valid:
+            filtered_records.append(sample)
+        else:
+            skipped_records.append(
+                (
+                    sample.get("conversation_id"),
+                    sample.get("utterance_id"),
+                    failure_reason,
+                )
+            )
+
+    if skipped_records:
+        print(f"[media validation] Skipped {len(skipped_records)} invalid samples from {split_name}.")
+        for conversation_id, utterance_id, reason in skipped_records[:10]:
+            print(
+                "[media validation] "
+                f"{split_name} conversation_id={conversation_id} utterance_id={utterance_id}: {reason}"
+            )
+        if len(skipped_records) > 10:
+            print(f"[media validation] ... and {len(skipped_records) - 10} more skipped samples.")
+
+    return filtered_records
+
+
+def load_jsonl_dataset(path, split_name: Optional[str] = None, validate_media: bool = False, media_cache: Optional[dict] = None):
     records = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -110,6 +226,13 @@ def load_jsonl_dataset(path):
             if not line:
                 continue
             records.append(json.loads(line))
+
+    records = filter_invalid_media_records(
+        records,
+        split_name=split_name or os.path.basename(path),
+        validate_media=validate_media,
+        media_cache=media_cache,
+    )
     return JsonlMessageDataset(records)
 
 
@@ -180,11 +303,9 @@ class OmniEmotionDataCollator:
         self.processor = processor
         self.video_fps = video_fps
         self.video_num_frames = video_num_frames
+        self._logged_bad_media = set()
 
-    def __call__(self, features):
-        conversations = [feature["messages"] for feature in features]
-        prompts = [conversation[:-1] for conversation in conversations]
-
+    def _apply_batches(self, conversations, prompts):
         full_batch = self.processor.apply_chat_template(
             conversations,
             add_generation_prompt=False,
@@ -207,6 +328,48 @@ class OmniEmotionDataCollator:
             load_audio_from_video=False,
             use_audio_in_video=False,
         )
+        return full_batch, prompt_batch
+
+    def _log_bad_sample(self, feature, exc):
+        sample_key = (
+            feature.get("conversation_id"),
+            feature.get("utterance_id"),
+            tuple(extract_media_paths(feature)),
+        )
+        if sample_key in self._logged_bad_media:
+            return
+        self._logged_bad_media.add(sample_key)
+        print(
+            "[collator] Skipping invalid sample "
+            f"conversation_id={feature.get('conversation_id')} "
+            f"utterance_id={feature.get('utterance_id')} "
+            f"media={extract_media_paths(feature)} "
+            f"error={type(exc).__name__}: {exc}"
+        )
+
+    def __call__(self, features):
+        conversations = [feature["messages"] for feature in features]
+        prompts = [conversation[:-1] for conversation in conversations]
+        try:
+            full_batch, prompt_batch = self._apply_batches(conversations, prompts)
+        except Exception as batch_exc:
+            valid_features = []
+            for feature in features:
+                try:
+                    self._apply_batches([feature["messages"]], [feature["messages"][:-1]])
+                    valid_features.append(feature)
+                except Exception as sample_exc:
+                    self._log_bad_sample(feature, sample_exc)
+
+            if not valid_features:
+                raise RuntimeError(
+                    "All samples in the current batch failed media loading. "
+                    "Consider enabling media validation on dataset load to skip corrupt files earlier."
+                ) from batch_exc
+
+            conversations = [feature["messages"] for feature in valid_features]
+            prompts = [conversation[:-1] for conversation in conversations]
+            full_batch, prompt_batch = self._apply_batches(conversations, prompts)
 
         labels = full_batch["input_ids"].clone()
         labels[full_batch["attention_mask"] == 0] = -100
@@ -226,6 +389,7 @@ class MultimodalTrainer(Trainer):
         self.video_fps = video_fps
         self.video_num_frames = video_num_frames
         self.generation_max_new_tokens = generation_max_new_tokens
+        self._logged_eval_bad_media = set()
 
     def get_eval_dataloader(self, eval_dataset=None) -> DataLoader:
         dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
@@ -244,18 +408,34 @@ class MultimodalTrainer(Trainer):
         for sample in tqdm(dataloader, desc=f"{metric_key_prefix}"):
             prompt_conversation = sample["messages"][:-1]
             gold_label = dataset_label_text(sample)
-
-            inputs = self.processor.apply_chat_template(
-                prompt_conversation,
-                add_generation_prompt=True,
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-                padding=True,
-                num_frames=self.video_num_frames,
-                load_audio_from_video=False,
-                use_audio_in_video=False,
-            )
+            try:
+                inputs = self.processor.apply_chat_template(
+                    prompt_conversation,
+                    add_generation_prompt=True,
+                    tokenize=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                    padding=True,
+                    num_frames=self.video_num_frames,
+                    load_audio_from_video=False,
+                    use_audio_in_video=False,
+                )
+            except Exception as exc:
+                sample_key = (
+                    sample.get("conversation_id"),
+                    sample.get("utterance_id"),
+                    tuple(extract_media_paths(sample)),
+                )
+                if sample_key not in self._logged_eval_bad_media:
+                    self._logged_eval_bad_media.add(sample_key)
+                    print(
+                        "[eval] Skipping invalid sample "
+                        f"conversation_id={sample.get('conversation_id')} "
+                        f"utterance_id={sample.get('utterance_id')} "
+                        f"media={extract_media_paths(sample)} "
+                        f"error={type(exc).__name__}: {exc}"
+                    )
+                continue
             inputs = {k: v.to(model.device) if torch.is_tensor(v) else v for k, v in inputs.items()}
             prompt_length = inputs["input_ids"].shape[1]
 
@@ -278,6 +458,9 @@ class MultimodalTrainer(Trainer):
             all_preds.append(normalized_pred)
             all_labels.append(gold_label)
             all_raw_decoded.append(generated_text)
+
+        if not all_labels:
+            raise RuntimeError(f"No valid evaluation samples remained for {metric_key_prefix}.")
 
         f1_weighted = f1_score(all_labels, all_preds, average="weighted")
         f1_macro = f1_score(all_labels, all_preds, average="macro")
@@ -466,6 +649,7 @@ if __name__ == "__main__":
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--optim", type=str, default="adamw_torch_fused")
     parser.add_argument("--multimodal_chat_format", action="store_true", default=True)
+    parser.add_argument("--skip_invalid_media", action="store_true", default=False)
     parser.add_argument("--meld_train_video_dir", type=str, default="/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/train_splits")
     parser.add_argument("--meld_valid_video_dir", type=str, default="/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/dev_splits_complete")
     parser.add_argument("--meld_test_video_dir", type=str, default="/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/output_repeated_splits_test")
@@ -487,9 +671,25 @@ if __name__ == "__main__":
     ]
     maybe_generate_data(all_path_folder_preprocessed_data, args)
 
-    full_dataset = load_jsonl_dataset(all_path_folder_preprocessed_data[0])
-    valid_dataset = load_jsonl_dataset(all_path_folder_preprocessed_data[1])
-    test_dataset = load_jsonl_dataset(all_path_folder_preprocessed_data[2])
+    media_cache = {}
+    full_dataset = load_jsonl_dataset(
+        all_path_folder_preprocessed_data[0],
+        split_name="train",
+        validate_media=args.skip_invalid_media,
+        media_cache=media_cache,
+    )
+    valid_dataset = load_jsonl_dataset(
+        all_path_folder_preprocessed_data[1],
+        split_name="valid",
+        validate_media=args.skip_invalid_media,
+        media_cache=media_cache,
+    )
+    test_dataset = load_jsonl_dataset(
+        all_path_folder_preprocessed_data[2],
+        split_name="test",
+        validate_media=args.skip_invalid_media,
+        media_cache=media_cache,
+    )
 
     curriculum_manager = None
     if args.curriculum and args.do_train:
