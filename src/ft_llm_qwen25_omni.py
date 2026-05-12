@@ -93,6 +93,27 @@ def dataset_label_text(sample):
     return extract_assistant_text(sample["messages"][-1])
 
 
+def strip_media_from_message_content(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return content
+
+    text_items = [item for item in content if item.get("type") == "text"]
+    if text_items:
+        return text_items
+    return content
+
+
+def strip_media_from_messages(messages):
+    sanitized_messages = []
+    for message in messages:
+        sanitized_message = dict(message)
+        sanitized_message["content"] = strip_media_from_message_content(message.get("content"))
+        sanitized_messages.append(sanitized_message)
+    return sanitized_messages
+
+
 class JsonlMessageDataset(TorchDataset):
     def __init__(self, records):
         self.records = records
@@ -299,11 +320,17 @@ class CurriculumDataset:
 
 
 class OmniEmotionDataCollator:
-    def __init__(self, processor, video_fps=1.0, video_num_frames=1):
+    def __init__(self, processor, video_fps=1.0, video_num_frames=1, text_only_input=False):
         self.processor = processor
         self.video_fps = video_fps
         self.video_num_frames = video_num_frames
+        self.text_only_input = text_only_input
         self._logged_bad_media = set()
+
+    def _prepare_messages(self, messages):
+        if self.text_only_input:
+            return strip_media_from_messages(messages)
+        return messages
 
     def _apply_batches(self, conversations, prompts):
         full_batch = self.processor.apply_chat_template(
@@ -348,7 +375,7 @@ class OmniEmotionDataCollator:
         )
 
     def __call__(self, features):
-        conversations = [feature["messages"] for feature in features]
+        conversations = [self._prepare_messages(feature["messages"]) for feature in features]
         prompts = [conversation[:-1] for conversation in conversations]
         try:
             full_batch, prompt_batch = self._apply_batches(conversations, prompts)
@@ -356,7 +383,8 @@ class OmniEmotionDataCollator:
             valid_features = []
             for feature in features:
                 try:
-                    self._apply_batches([feature["messages"]], [feature["messages"][:-1]])
+                    feature_messages = self._prepare_messages(feature["messages"])
+                    self._apply_batches([feature_messages], [feature_messages[:-1]])
                     valid_features.append(feature)
                 except Exception as sample_exc:
                     self._log_bad_sample(feature, sample_exc)
@@ -367,7 +395,7 @@ class OmniEmotionDataCollator:
                     "Consider enabling media validation on dataset load to skip corrupt files earlier."
                 ) from batch_exc
 
-            conversations = [feature["messages"] for feature in valid_features]
+            conversations = [self._prepare_messages(feature["messages"]) for feature in valid_features]
             prompts = [conversation[:-1] for conversation in conversations]
             full_batch, prompt_batch = self._apply_batches(conversations, prompts)
 
@@ -382,12 +410,13 @@ class OmniEmotionDataCollator:
 
 
 class MultimodalTrainer(Trainer):
-    def __init__(self, *args, processor=None, label_space=None, video_fps=1.0, video_num_frames=1, generation_max_new_tokens=10, **kwargs):
+    def __init__(self, *args, processor=None, label_space=None, video_fps=1.0, video_num_frames=1, text_only_input=False, generation_max_new_tokens=10, **kwargs):
         super().__init__(*args, **kwargs)
         self.processor = processor
         self.label_space = label_space or []
         self.video_fps = video_fps
         self.video_num_frames = video_num_frames
+        self.text_only_input = text_only_input
         self.generation_max_new_tokens = generation_max_new_tokens
         self._logged_eval_bad_media = set()
 
@@ -407,6 +436,8 @@ class MultimodalTrainer(Trainer):
 
         for sample in tqdm(dataloader, desc=f"{metric_key_prefix}"):
             prompt_conversation = sample["messages"][:-1]
+            if self.text_only_input:
+                prompt_conversation = strip_media_from_messages(prompt_conversation)
             gold_label = dataset_label_text(sample)
             try:
                 inputs = self.processor.apply_chat_template(
@@ -587,11 +618,13 @@ def build_trainer(model, processor, train_dataset, eval_dataset, training_args, 
             processor,
             video_fps=args.video_fps,
             video_num_frames=args.video_num_frames,
+            text_only_input=args.text_only_input,
         ),
         processor=processor,
         label_space=label_space,
         video_fps=args.video_fps,
         video_num_frames=args.video_num_frames,
+        text_only_input=args.text_only_input,
         generation_max_new_tokens=args.generation_max_new_tokens,
     )
 
@@ -647,6 +680,7 @@ if __name__ == "__main__":
     parser.add_argument("--curriculum_update_epochs", type=int, default=None)
     parser.add_argument("--video_fps", type=float, default=1.0)
     parser.add_argument("--video_num_frames", type=int, default=1)
+    parser.add_argument("--text_only_input", action="store_true", default=False)
     parser.add_argument("--generation_max_new_tokens", type=int, default=10)
     parser.add_argument("--per_device_train_batch_size", type=int, default=1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
@@ -669,7 +703,7 @@ if __name__ == "__main__":
     set_random_seed(args.seed)
 
     all_path_folder_preprocessed_data = [
-        f"{args.data_folder}/{args.data_name}.{d_type}.{args.kshot}shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}_Aud_Vis_Omni.jsonl"
+        f"{args.data_folder}/{args.data_name}.{d_type}.{args.kshot}shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}_Aud_Vis_Omni_text_only.jsonl"
         for d_type in ["train", "valid", "test"]
     ]
     maybe_generate_data(all_path_folder_preprocessed_data, args)
@@ -678,19 +712,19 @@ if __name__ == "__main__":
     full_dataset = load_jsonl_dataset(
         all_path_folder_preprocessed_data[0],
         split_name="train",
-        validate_media=args.skip_invalid_media,
+        validate_media=(args.skip_invalid_media and not args.text_only_input),
         media_cache=media_cache,
     )
     valid_dataset = load_jsonl_dataset(
         all_path_folder_preprocessed_data[1],
         split_name="valid",
-        validate_media=args.skip_invalid_media,
+        validate_media=(args.skip_invalid_media and not args.text_only_input),
         media_cache=media_cache,
     )
     test_dataset = load_jsonl_dataset(
         all_path_folder_preprocessed_data[2],
         split_name="test",
-        validate_media=args.skip_invalid_media,
+        validate_media=(args.skip_invalid_media and not args.text_only_input),
         media_cache=media_cache,
     )
 
