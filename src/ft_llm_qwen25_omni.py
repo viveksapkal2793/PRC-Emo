@@ -405,6 +405,15 @@ class OmniEmotionDataCollator:
         for row_idx, prompt_len in enumerate(prompt_lengths):
             labels[row_idx, :prompt_len] = -100
 
+        valid_label_tokens = (labels != -100).sum(dim=1)
+        if torch.any(valid_label_tokens == 0):
+            raise RuntimeError(
+                "Encountered a batch item with zero supervised label tokens after masking. "
+                f"Per-sample valid_label_tokens={valid_label_tokens.tolist()} "
+                f"prompt_lengths={prompt_lengths} "
+                f"full_lengths={full_batch['attention_mask'].sum(dim=1).tolist()}"
+            )
+
         full_batch["labels"] = labels
         return full_batch
 
@@ -586,12 +595,14 @@ def load_base_model(model_path, tensor_dtype, bnb_config):
 
 def attach_lora(model, args):
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    lora_target_modules = [module.strip() for module in args.lora_target_modules.split(",") if module.strip()]
+    print(f"Using LoRA target modules: {lora_target_modules}")
     peft_config = LoraConfig(
         lora_alpha=128,
         lora_dropout=0.05,
         r=args.lora_r,
         bias="none",
-        target_modules="all-linear",
+        target_modules=lora_target_modules,
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, peft_config)
@@ -605,6 +616,8 @@ def load_peft_model(model_dir, tensor_dtype, bnb_config):
     base_model = prepare_model_for_kbit_training(base_model, use_gradient_checkpointing=True)
     model = PeftModel.from_pretrained(base_model, model_dir)
     model.train()
+    if hasattr(model, "print_trainable_parameters"):
+        model.print_trainable_parameters()
     return model
 
 
@@ -668,6 +681,12 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--kshot", type=int, default=0)
     parser.add_argument("--lora_r", type=int, default=32)
+    parser.add_argument(
+        "--lora_target_modules",
+        type=str,
+        default="q_proj,k_proj,v_proj,o_proj",
+        help="Comma-separated LoRA target modules. For a reddit-style Thinker LoRA run, use q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+    )
     parser.add_argument("--eval_delay", type=int, default=100000)
     parser.add_argument("--window", type=int, default=5)
     parser.add_argument("--max_seq_len", type=int, default=None)

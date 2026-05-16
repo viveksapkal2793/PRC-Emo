@@ -86,6 +86,7 @@ python ./src/ft_llm_qwen25_omni.py --do_eval_dev --do_eval_test --do_train --cur
  --video_fps $VIDEO_FPS --generation_max_new_tokens $GENERATION_MAX_NEW_TOKENS \
  --per_device_train_batch_size $PER_DEVICE_TRAIN_BATCH_SIZE --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
  --optim $OPTIM --skip_invalid_media \
+ --lora_target_modules "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj" \
  --meld_train_video_dir $MELD_TRAIN_VIDEO_DIR --meld_valid_video_dir $MELD_VALID_VIDEO_DIR --meld_test_video_dir $MELD_TEST_VIDEO_DIR \
  --meld_train_audio_dir $MELD_TRAIN_AUDIO_DIR --meld_valid_audio_dir $MELD_VALID_AUDIO_DIR --meld_test_audio_dir $MELD_TEST_AUDIO_DIR
 done
