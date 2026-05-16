@@ -28,6 +28,27 @@ from reformat_data_ft_llm_combine import get_label_map, process
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True, write_through=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True, write_through=True)
+
+
+class SuppressKnownOmniWarnings(logging.Filter):
+    SUPPRESSED_SUBSTRINGS = (
+        "System prompt modified, audio output may not work as expected.",
+        "Unused or unrecognized kwargs: return_tensors, images.",
+    )
+
+    def filter(self, record):
+        message = record.getMessage()
+        return not any(substr in message for substr in self.SUPPRESSED_SUBSTRINGS)
+
+
+_warning_filter = SuppressKnownOmniWarnings()
+logging.getLogger().addFilter(_warning_filter)
+logging.getLogger("transformers").addFilter(_warning_filter)
+
 try:
     from transformers import Qwen2_5OmniProcessor, Qwen2_5OmniThinkerForConditionalGeneration
 except ImportError as exc:
