@@ -1,4 +1,5 @@
 #将原始对话数据转换为适合大语言模型（LLM）训练的提示工程格式
+import csv
 import json
 import re
 import faiss  # 添加FAISS向量检索库
@@ -46,6 +47,14 @@ RETRIEVAL_PATH = "./data/Emotion_Retrieval_Library.json"
 print(f"使用的是：{RETRIEVAL_PATH}\n")
 retrieval_index, retrieval_metadata, retrieval_vectors = load_retrieval_library(RETRIEVAL_PATH)
 sentence_model = SentenceTransformer('all-MiniLM-L6-v2',device='cpu')  # 与检索库相同的向量模型
+
+DEFAULT_MELD_SENTIMENT_CSVS = {
+    "train": "/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/train_sent_emo.csv",
+    "valid": "/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/dev_sent_emo.csv",
+    "test": "/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/test_sent_emo.csv",
+}
+
+_MELD_SENTIMENT_CACHE = {}
 # === 新增：检索相似样本函数 ===
 def retrieve_similar_samples(query_text, current_id, d_type, k=3):
     """
@@ -87,6 +96,95 @@ def retrieve_similar_samples(query_text, current_id, d_type, k=3):
             break
     #results.sort(key=lambda x: x['similarity'], reverse=True) # 按相似度降序排序
     return results
+
+
+def load_meld_sentiment_lookup(csv_path):
+    if csv_path in _MELD_SENTIMENT_CACHE:
+        return _MELD_SENTIMENT_CACHE[csv_path]
+
+    lookup = {}
+    dialogue_rows = {}
+    dialogue_id_order = []
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            dialogue_id = str(row["Dialogue_ID"])
+            utterance_id = int(row["Utterance_ID"])
+            record = {
+                "emotion_label": row["Emotion"].strip(),
+                "sentiment_label": row["Sentiment"].strip().lower(),
+                "speaker": row["Speaker"].strip(),
+                "utterance": row["Utterance"],
+                "csv_utterance_id": utterance_id,
+            }
+            lookup[(dialogue_id, utterance_id)] = record
+            if dialogue_id not in dialogue_rows:
+                dialogue_id_order.append(dialogue_id)
+            dialogue_rows.setdefault(dialogue_id, []).append(record)
+
+    payload = {
+        "by_dialogue_and_uttid": lookup,
+        "by_dialogue_order": dialogue_rows,
+        "dialogue_id_order": dialogue_id_order,
+    }
+    _MELD_SENTIMENT_CACHE[csv_path] = payload
+    return payload
+
+
+def get_meld_sentiment_lookup(multimodal_config, d_type):
+    csv_path = None
+    if multimodal_config is not None:
+        csv_path = multimodal_config.get("meld_sentiment_csv_map", {}).get(d_type)
+    if not csv_path:
+        csv_path = DEFAULT_MELD_SENTIMENT_CSVS.get(d_type)
+    if not csv_path:
+        return {}
+    return load_meld_sentiment_lookup(csv_path)
+
+
+def get_meld_sentiment_info(sentiment_lookup, dialogue_id, utterance_position, speaker, utterance_text):
+    if not sentiment_lookup:
+        return None
+
+    dialogue_id = str(dialogue_id)
+    by_id = sentiment_lookup.get("by_dialogue_and_uttid", {})
+    by_order = sentiment_lookup.get("by_dialogue_order", {})
+
+    direct_match = by_id.get((dialogue_id, int(utterance_position)))
+    if direct_match is not None:
+        return direct_match
+
+    dialogue_rows = by_order.get(dialogue_id, [])
+    if utterance_position < len(dialogue_rows):
+        ordered_match = dialogue_rows[utterance_position]
+        if ordered_match["speaker"] == speaker and ordered_match["utterance"] == utterance_text:
+            return ordered_match
+
+    exact_text_matches = [
+        row for row in dialogue_rows
+        if row["speaker"] == speaker and row["utterance"] == utterance_text
+    ]
+    if len(exact_text_matches) == 1:
+        return exact_text_matches[0]
+
+    return None
+
+
+def get_meld_dialogue_rows(sentiment_lookup, dialogue_id, dialogue_position=None):
+    if not sentiment_lookup:
+        return []
+
+    dialogue_id = str(dialogue_id)
+    by_order = sentiment_lookup.get("by_dialogue_order", {})
+    if dialogue_id in by_order:
+        return by_order[dialogue_id]
+
+    dialogue_id_order = sentiment_lookup.get("dialogue_id_order", [])
+    if dialogue_position is not None and 0 <= dialogue_position < len(dialogue_id_order):
+        mapped_dialogue_id = dialogue_id_order[dialogue_position]
+        return by_order.get(mapped_dialogue_id, [])
+
+    return []
 
 #对话情感分析任务的提示工程生成器
 data_name_pattern = 'train'
@@ -799,6 +897,7 @@ def calculate_difficulty(dialog_data, emotionmap, matrix, emotion_to_index, data
 def process(paths_folder_preprocessed_data, args):
     
     process_kwargs = {}
+    include_auxiliary_labels = bool(getattr(args, "include_auxiliary_labels", False))
     multimodal_config = {
         "multimodal_chat_format": getattr(args, "multimodal_chat_format", False),
         "use_visual_exp": getattr(args, "use_visual_exp", False),
@@ -809,6 +908,11 @@ def process(paths_folder_preprocessed_data, args):
         "meld_train_audio_dir": getattr(args, "meld_train_audio_dir", None),
         "meld_valid_audio_dir": getattr(args, "meld_valid_audio_dir", None),
         "meld_test_audio_dir": getattr(args, "meld_test_audio_dir", None),
+        "meld_sentiment_csv_map": {
+            "train": getattr(args, "meld_train_sentiment_csv", DEFAULT_MELD_SENTIMENT_CSVS["train"]),
+            "valid": getattr(args, "meld_valid_sentiment_csv", DEFAULT_MELD_SENTIMENT_CSVS["valid"]),
+            "test": getattr(args, "meld_test_sentiment_csv", DEFAULT_MELD_SENTIMENT_CSVS["test"]),
+        },
     }
     #paths_folder_preprocessed_data: 一个列表，包含预处理数据的路径
     for path_folder_preprocessed_data in paths_folder_preprocessed_data:
@@ -845,6 +949,11 @@ def process(paths_folder_preprocessed_data, args):
         )
         
         new_format = []
+        meld_sentiment_lookup = (
+            get_meld_sentiment_lookup(multimodal_config, d_type)
+            if include_auxiliary_labels and data_name == "meld"
+            else {}
+        )
         
         # if use speaker description -> load raw data and preprocess
         #prompt 类型不是 "default"，则从指定文件中加载“说话人描述”
@@ -951,7 +1060,7 @@ def process(paths_folder_preprocessed_data, args):
             emotionmap = get_emotion_map(data_name)
             matrix, emotion_to_index = similarity_matrix.get_similarity_matrix(data_name)
         #遍历原始数据中的每条对话
-        for s_id, conv in org_data.items(): 
+        for dialogue_position, (s_id, conv) in enumerate(org_data.items()): 
            # 根据不同的prompting_type构造不同的参数
             if prompting_type == 'ImplicitEmotion_V3':
                 samples = process_func(
@@ -971,6 +1080,44 @@ def process(paths_folder_preprocessed_data, args):
             else:
                 # 其他函数使用标准参数
                 samples = process_func(data_name, conv, around_window, s_id, desc_speaker_data)
+
+            if include_auxiliary_labels:
+                dialogue_rows = (
+                    get_meld_dialogue_rows(meld_sentiment_lookup, str(s_id), dialogue_position)
+                    if data_name == "meld"
+                    else []
+                )
+                for sample_idx, sample in enumerate(samples):
+                    utterance_id = int(sample.get("utterance_id", sample_idx))
+                    sample["conversation_id"] = str(sample.get("conversation_id", s_id))
+                    sample["utterance_id"] = utterance_id
+                    sample["emotion_label"] = get_label_map(data_name)[conv['labels'][utterance_id]]
+                    if data_name == "meld":
+                        sentiment_info = None
+                        if utterance_id < len(dialogue_rows):
+                            candidate = dialogue_rows[utterance_id]
+                            if (
+                                candidate["speaker"] == conv["speakers"][utterance_id]
+                                and candidate["utterance"] == conv["sentences"][utterance_id]
+                            ):
+                                sentiment_info = candidate
+                        if sentiment_info is None:
+                            sentiment_info = get_meld_sentiment_info(
+                                meld_sentiment_lookup,
+                                dialogue_id=str(s_id),
+                                utterance_position=utterance_id,
+                                speaker=conv["speakers"][utterance_id],
+                                utterance_text=conv["sentences"][utterance_id],
+                            )
+                        if sentiment_info is None:
+                            raise KeyError(
+                                f"Missing MELD sentiment metadata for split={d_type}, "
+                                f"dialogue_id={s_id}, utterance_id={utterance_id}"
+                            )
+                        sample["emotion_label"] = sentiment_info["emotion_label"]
+                        sample["sentiment_label"] = sentiment_info["sentiment_label"]
+                    else:
+                        sample["sentiment_label"] = None
 
             if d_type == 'train':
                 difficulty = calculate_difficulty(conv, emotionmap, matrix, emotion_to_index, data_name)
@@ -1023,6 +1170,14 @@ if __name__=="__main__":
                         help='MELD valid audio directory')
     parser.add_argument('--meld_test_audio_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD_audio/test',
                         help='MELD test audio directory')
+    parser.add_argument('--meld_train_sentiment_csv', type=str, default=DEFAULT_MELD_SENTIMENT_CSVS["train"],
+                        help='MELD train sentiment CSV path')
+    parser.add_argument('--meld_valid_sentiment_csv', type=str, default=DEFAULT_MELD_SENTIMENT_CSVS["valid"],
+                        help='MELD valid sentiment CSV path')
+    parser.add_argument('--meld_test_sentiment_csv', type=str, default=DEFAULT_MELD_SENTIMENT_CSVS["test"],
+                        help='MELD test sentiment CSV path')
+    parser.add_argument('--include_auxiliary_labels', action='store_true',
+                        help='Add emotion_label and sentiment_label fields to generated JSONL samples')
     
     args = parser.parse_args()
     
@@ -1032,6 +1187,8 @@ if __name__=="__main__":
         feature_suffix_parts.append("Aud")
     if args.use_visual_exp:
         feature_suffix_parts.append("Vis")
+    if args.include_auxiliary_labels:
+        feature_suffix_parts.append("Aux_Labels")
     feature_suffix = "_" + "_".join(feature_suffix_parts) if feature_suffix_parts else ""
     output_suffix = f"{feature_suffix}_Omni.jsonl" if args.multimodal_chat_format else f"{feature_suffix}.jsonl"
     paths = [
