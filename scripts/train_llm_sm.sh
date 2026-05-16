@@ -62,9 +62,6 @@ MAX_SEQ_LEN=2048
 MAX_STEPS=-1
 EVAL_DELAY=100000
 
-RESULTS_ARCHIVE_DIR="/scratch/data/bikash_rs/Vivek/PRC-Emo/orig_results_reprod"
-mkdir -p "$RESULTS_ARCHIVE_DIR"
-
 IFS='/' read -ra ADDR <<< "$MODEL_ID"
 MODEL_ID_0=${ADDR[1]}
 
@@ -75,7 +72,7 @@ python ./src/ft_llm_cl_sentiment_multitask.py --do_eval_dev --do_eval_test --do_
  --ft_model_id ${DATANAME}_${MODEL_ID_0}_ep${EP}_step${MAX_STEPS}_lrs-${LR_SCHEDULER}${LR}_${TOPK}shot_r${LORA_R}_w${WINDOW}_${PROMPT_TYPE}_seed${seed}_L${MAX_SEQ_LEN}_llmdesc${EXTRACT_PROMTING_LLM_ID}_ED${EVAL_DELAY}_sentiment_multitask \
  --lr_scheduler $LR_SCHEDULER --lr $LR --lora_r $LORA_R --max_steps $MAX_STEPS --epoch ${EP} \
  --kshot $TOPK --window $WINDOW --data_name $DATANAME --prompting_type ${PROMPT_TYPE} --extract_prompting_llm_id $EXTRACT_PROMTING_LLM_ID \
- --seed $seed --max_seq_len $MAX_SEQ_LEN --eval_delay $EVAL_DELAY --data_folder ./data/
+ --seed $seed --max_seq_len $MAX_SEQ_LEN --eval_delay $EVAL_DELAY --data_folder ./data/ --output_folder "./finetuned_llm_multitask/"
 
 done
 
