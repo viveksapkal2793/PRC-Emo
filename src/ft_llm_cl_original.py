@@ -4,6 +4,7 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 import argparse
 import json
+import sys
 from sklearn.metrics import classification_report
 from datasets import load_dataset, Dataset
 import torch
@@ -24,6 +25,11 @@ from transformers.trainer_utils import get_last_checkpoint
 from reformat_data_ft_llm_combine import process
 from transformers import TrainerCallback
 from peft import PeftModel, PeftConfig
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True, write_through=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True, write_through=True)
 
 #4090用不了这两个，需要禁用
 os.environ["NCCL_P2P_DISABLE"] = "1"
@@ -280,6 +286,7 @@ if __name__=='__main__':
     parser.add_argument('--curriculum', action="store_true", help='enable curriculum learning', default=False)
     parser.add_argument('--bucket_number', type=int, default=8, help='number of buckets for curriculum learning')
     parser.add_argument('--curriculum_update_epochs', type=int, default=None, help='epochs between curriculum updates')
+    parser.add_argument('--logging_steps', type=int, default=1, help='training log frequency in optimizer steps')
 
     args, unknown = parser.parse_known_args()
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -399,7 +406,8 @@ if __name__=='__main__':
                 save_total_limit=1,
                 optim="adamw_torch_fused", 
                 eval_delay=args.eval_delay,
-                logging_steps=50,
+                logging_first_step=True,
+                logging_steps=args.logging_steps,
                 eval_steps=50,
                 save_steps=50,
                 load_best_model_at_end=True,
@@ -643,7 +651,8 @@ if __name__=='__main__':
                 save_total_limit=1,
                 optim="adamw_torch_fused",
                 eval_delay=args.eval_delay,
-                logging_steps=50,
+                logging_first_step=True,
+                logging_steps=args.logging_steps,
                 eval_steps=50,
                 save_steps=50,
                 load_best_model_at_end=True,
@@ -778,7 +787,8 @@ if __name__=='__main__':
             save_total_limit=1,
             optim="adamw_torch", 
             eval_delay=args.eval_delay,
-            logging_steps=50,
+            logging_first_step=True,
+            logging_steps=args.logging_steps,
             eval_steps=50,
             save_steps=50,
             load_best_model_at_end=True,
