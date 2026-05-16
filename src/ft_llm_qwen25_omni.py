@@ -542,7 +542,8 @@ def create_training_args(output_dir, num_train_epochs, args):
         save_total_limit=1,
         optim=args.optim,
         eval_delay=args.eval_delay,
-        logging_steps=50,
+        logging_first_step=True,
+        logging_steps=args.logging_steps,
         eval_steps=50,
         save_steps=50,
         load_best_model_at_end=True,
@@ -703,6 +704,7 @@ if __name__ == "__main__":
     parser.add_argument("--generation_max_new_tokens", type=int, default=10)
     parser.add_argument("--per_device_train_batch_size", type=int, default=1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
+    parser.add_argument("--logging_steps", type=int, default=1)
     parser.add_argument("--optim", type=str, default="adamw_torch_fused")
     parser.add_argument("--multimodal_chat_format", action="store_true", default=True)
     parser.add_argument("--skip_invalid_media", action="store_true", default=False)
