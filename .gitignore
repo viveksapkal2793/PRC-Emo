@@ -6,6 +6,7 @@ __pycache__/
 .DS_Store
 models/
 finetuned_llm/
+finetuned_llm_multitask/
 .codex
 5_seed_run_orig_reprod/
 prc-emo-omni-env/
