@@ -636,7 +636,8 @@ def load_peft_model(model_dir, tensor_dtype, bnb_config):
     peft_config = PeftConfig.from_pretrained(model_dir)
     base_model = load_base_model(peft_config.base_model_name_or_path, tensor_dtype, bnb_config)
     base_model = prepare_model_for_kbit_training(base_model, use_gradient_checkpointing=True)
-    model = PeftModel.from_pretrained(base_model, model_dir)
+    base_model.enable_input_require_grads()
+    model = PeftModel.from_pretrained(base_model, model_dir, is_trainable=True)
     model.train()
     if hasattr(model, "print_trainable_parameters"):
         model.print_trainable_parameters()
