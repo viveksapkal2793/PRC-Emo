@@ -32,6 +32,21 @@ from trl import set_seed as trl_seed
 from reformat_data_ft_llm_combine import process
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=r"Trainer\.tokenizer is now deprecated\..*",
+)
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=r"You passed a tokenizer with `padding_side` not equal to `right` to the SFTTrainer\.",
+)
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r"`tokenizer` is deprecated and will be removed in version 5\.0\.0 for `MultitaskTrainer\.__init__`\.",
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True, write_through=True)
@@ -181,6 +196,16 @@ class AuxiliarySentimentWrapper(torch.nn.Module):
     def get_input_embeddings(self):
         return self.base_model.get_input_embeddings()
 
+    def gradient_checkpointing_enable(self, *args, **kwargs):
+        if hasattr(self.base_model, "gradient_checkpointing_enable"):
+            return self.base_model.gradient_checkpointing_enable(*args, **kwargs)
+        raise AttributeError("base_model does not support gradient_checkpointing_enable")
+
+    def gradient_checkpointing_disable(self, *args, **kwargs):
+        if hasattr(self.base_model, "gradient_checkpointing_disable"):
+            return self.base_model.gradient_checkpointing_disable(*args, **kwargs)
+        raise AttributeError("base_model does not support gradient_checkpointing_disable")
+
     def save_pretrained(self, save_directory, **kwargs):
         os.makedirs(save_directory, exist_ok=True)
         self.base_model.save_pretrained(save_directory, **kwargs)
@@ -242,7 +267,7 @@ class MultitaskTrainer(SFTTrainer):
             eval_dataset=eval_dataset,
             data_collator=data_collator,
             formatting_func=None,
-            dataset_text_field=None,
+            dataset_text_field="input_ids",
             packing=False,
             **kwargs,
         )
@@ -410,7 +435,7 @@ class MultitaskTrainer(SFTTrainer):
 
 
 def create_training_args(output_dir, num_train_epochs, args):
-    return TrainingArguments(
+    training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=num_train_epochs,
         max_steps=args.max_steps,
@@ -442,6 +467,9 @@ def create_training_args(output_dir, num_train_epochs, args):
         report_to="tensorboard",
         remove_unused_columns=False,
     )
+    if hasattr(training_args, "neftune_noise_alpha"):
+        training_args.neftune_noise_alpha = 5
+    return training_args
 
 
 def build_quant_config(tensor_dtype):
@@ -512,15 +540,17 @@ def load_multitask_model(model_dir, tensor_dtype, bnb_config, offload_folder=Non
 
 
 def build_trainer(model, tokenizer_local, train_dataset, eval_dataset, training_args, args):
+    max_seq_length = args.max_seq_len
+    if max_seq_length is None:
+        max_seq_length = min(getattr(tokenizer_local, "model_max_length", 1024), 1024)
     return MultitaskTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         tokenizer=tokenizer_local,
-        max_seq_length=args.max_seq_len,
+        max_seq_length=max_seq_length,
         peft_config=None,
-        neftune_noise_alpha=5,
     )
 
 
@@ -577,7 +607,7 @@ if __name__ == "__main__":
     set_random_seed(args.seed)
 
     all_path_folder_preprocessed_data = [
-        f"{args.data_folder}/{args.data_name}.{d_type}.{args.kshot}shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}_Vis.jsonl"
+        f"{args.data_folder}/{args.data_name}.{d_type}.{args.kshot}shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}_Aud_Vis_Aux_Labels.jsonl"
         for d_type in ["train", "valid", "test"]
     ]
     maybe_generate_data(all_path_folder_preprocessed_data, args)
