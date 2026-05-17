@@ -287,6 +287,12 @@ class MultitaskTrainer(SFTTrainer):
             desc="Tokenizing eval dataset",
         )
 
+    def get_eval_dataloader(self, eval_dataset=None) -> DataLoader:
+        eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
+        if "input_ids" not in eval_dataset.column_names:
+            eval_dataset = self._process_eval_dataset(eval_dataset)
+        return super().get_eval_dataloader(eval_dataset)
+
     def _tokenize_train_sample(self, sample):
         full_text = self.tokenizer.apply_chat_template(
             sample["messages"],
@@ -449,10 +455,11 @@ class MultitaskTrainer(SFTTrainer):
 
 
 def create_training_args(output_dir, num_train_epochs, args):
+    max_steps = args.max_steps if args.max_steps is not None else -1
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=num_train_epochs,
-        max_steps=args.max_steps,
+        max_steps=max_steps,
         per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
         gradient_accumulation_steps=4,
