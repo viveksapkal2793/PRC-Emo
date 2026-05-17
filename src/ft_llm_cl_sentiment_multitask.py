@@ -25,6 +25,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, DataCollatorForSeq2Seq, TrainingArguments
 from transformers import set_seed as transf_seed
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.trainer import TRAINING_ARGS_NAME
 from transformers.trainer_utils import EvalLoopOutput
 from trl import SFTTrainer, setup_chat_format
 from trl import set_seed as trl_seed
@@ -432,6 +433,19 @@ class MultitaskTrainer(SFTTrainer):
             json.dump(result_data, f, indent=1, ensure_ascii=False)
 
         return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples)
+
+    def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
+        if output_dir is None:
+            output_dir = self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        self.model.save_pretrained(output_dir, safe_serialization=self.args.save_safetensors)
+        if getattr(self, "processing_class", None) is not None:
+            self.processing_class.save_pretrained(output_dir)
+        elif self.data_collator is not None and hasattr(self.data_collator, "tokenizer"):
+            tokenizer = self.data_collator.tokenizer
+            if tokenizer is not None:
+                tokenizer.save_pretrained(output_dir)
+        torch.save(self.args, os.path.join(output_dir, TRAINING_ARGS_NAME))
 
 
 def create_training_args(output_dir, num_train_epochs, args):
