@@ -19,7 +19,7 @@ import torch
 import av
 from lightning import seed_everything
 from peft import LoraConfig, PeftConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
-from sklearn.metrics import accuracy_score, classification_report, f1_score
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 from torch.utils.data import DataLoader, Dataset as TorchDataset
 from tqdm import tqdm
 from transformers import BitsAndBytesConfig, Trainer, TrainingArguments
@@ -532,6 +532,9 @@ class MultimodalTrainer(Trainer):
         print(set(all_preds))
         print(set(all_labels))
         print(classification_report(all_labels, all_preds, digits=4, zero_division=0))
+        label_order = sorted(set(all_labels) | set(all_preds))
+        print("confusion_matrix:")
+        print(confusion_matrix(all_labels, all_preds, labels=label_order))
 
         metrics = {
             f"{metric_key_prefix}_weighted-f1": f1_weighted,

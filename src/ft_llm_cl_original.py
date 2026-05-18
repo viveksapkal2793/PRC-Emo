@@ -14,7 +14,7 @@ from peft import LoraConfig, AutoPeftModelForCausalLM
 from trl import SFTTrainer
 from transformers import set_seed as transf_seed
 from tqdm import tqdm
-from sklearn.metrics import f1_score, accuracy_score
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 import numpy as np 
 from torch.utils.data import DataLoader
 from transformers.trainer_utils import EvalLoopOutput
@@ -234,6 +234,9 @@ class SimplifiedTrainer(SFTTrainer):
         print(set(all_labels))  # 看真实标签有哪些
         accuracy = accuracy_score(all_labels, all_preds)
         print(classification_report(all_labels, all_preds, digits=4))
+        label_order = sorted(set(all_labels) | set(all_preds))
+        print("confusion_matrix:")
+        print(confusion_matrix(all_labels, all_preds, labels=label_order))
         metrics = { f"{metric_key_prefix}_weighted-f1": f1_weighted,
                    f"{metric_key_prefix}_macro-f1": f1_macro,
                     f"{metric_key_prefix}_accuracy": accuracy}
