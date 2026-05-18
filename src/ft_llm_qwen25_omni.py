@@ -713,7 +713,7 @@ if __name__ == "__main__":
         "--lora_target_modules",
         type=str,
         default="q_proj,k_proj,v_proj,o_proj",
-        help="Comma-separated LoRA target modules. For a reddit-style Thinker LoRA run, use q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+        help="Comma-separated LoRA target modules. For a Thinker LoRA run, use q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
     )
     parser.add_argument("--eval_delay", type=int, default=100000)
     parser.add_argument("--window", type=int, default=5)
