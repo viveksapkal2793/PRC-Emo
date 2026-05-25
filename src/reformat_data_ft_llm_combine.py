@@ -296,9 +296,64 @@ def load_dialogue_audio_descriptions(folder_data, d_type):
 def _wrap_text_message(role, text):
     return {"role": role, "content": [{"type": "text", "text": text}]}
 
+def _resolve_image_path(image_dir, base_name):
+    if not image_dir:
+        return None
+
+    for extension in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]:
+        candidate = os.path.join(image_dir, f"{base_name}{extension}")
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+def _get_selected_media_inputs(multimodal_config):
+    if multimodal_config is None:
+        return []
+
+    selected_inputs = []
+    if multimodal_config.get("video_input"):
+        selected_inputs.append("video")
+    if multimodal_config.get("image_input"):
+        selected_inputs.append("image")
+    if multimodal_config.get("audio_input"):
+        selected_inputs.append("audio")
+
+    if not selected_inputs and multimodal_config.get("multimodal_chat_format"):
+        # Preserve previous Omni generation behavior when no explicit media flags are set.
+        selected_inputs = ["video", "audio"]
+
+    return selected_inputs
+
+def _format_media_input_phrase(selected_inputs, definite=True):
+    if not selected_inputs:
+        return ""
+
+    phrase_map = {
+        "video": "video clip of the current target utterance",
+        "image": "face-cropped image of the active speaker",
+        "audio": "separately extracted audio clip of the current target utterance",
+    }
+
+    phrases = [phrase_map[media_type] for media_type in selected_inputs]
+    if definite:
+        phrases = [f"the {phrase}" for phrase in phrases]
+    else:
+        article_map = {
+            "video": "a",
+            "image": "a",
+            "audio": "a",
+        }
+        phrases = [f"{article_map[media_type]} {phrase_map[media_type]}" for media_type in selected_inputs]
+
+    if len(phrases) == 1:
+        return phrases[0]
+    if len(phrases) == 2:
+        return f"{phrases[0]} and {phrases[1]}"
+    return ", ".join(phrases[:-1]) + f", and {phrases[-1]}"
+
 def _build_meld_media_paths(s_id, utter_idx, multimodal_config, d_type):
     if multimodal_config is None:
-        return None, None
+        return None, None, None
 
     video_dir_map = {
         "train": multimodal_config.get("meld_train_video_dir"),
@@ -310,25 +365,36 @@ def _build_meld_media_paths(s_id, utter_idx, multimodal_config, d_type):
         "valid": multimodal_config.get("meld_valid_audio_dir"),
         "test": multimodal_config.get("meld_test_audio_dir"),
     }
+    image_dir_map = {
+        "train": multimodal_config.get("meld_train_image_dir"),
+        "valid": multimodal_config.get("meld_valid_image_dir"),
+        "test": multimodal_config.get("meld_test_image_dir"),
+    }
 
     video_dir = video_dir_map.get(d_type)
     audio_dir = audio_dir_map.get(d_type)
+    image_dir = image_dir_map.get(d_type)
     base_name = f"dia{s_id}_utt{utter_idx}"
 
     video_path = os.path.join(video_dir, f"{base_name}.mp4") if video_dir else None
     audio_path = os.path.join(audio_dir, f"{base_name}.wav") if audio_dir else None
+    image_path = _resolve_image_path(image_dir, base_name)
 
     if video_path and not os.path.exists(video_path):
         video_path = None
     if audio_path and not os.path.exists(audio_path):
         audio_path = None
+    if image_path and not os.path.exists(image_path):
+        image_path = None
 
-    return video_path, audio_path
+    return video_path, audio_path, image_path
 
-def _build_multimodal_messages(system_msg, user_msg, label_msg, video_path=None, audio_path=None):
+def _build_multimodal_messages(system_msg, user_msg, label_msg, video_path=None, audio_path=None, image_path=None):
     user_content = []
     if video_path:
         user_content.append({"type": "video", "video": video_path})
+    if image_path:
+        user_content.append({"type": "image", "image": image_path})
     if audio_path:
         user_content.append({"type": "audio", "audio": audio_path})
     user_content.append({"type": "text", "text": user_msg})
@@ -651,6 +717,7 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
     use_multimodal_chat = bool(multimodal_config and multimodal_config.get("multimodal_chat_format"))
     use_visual_exp = bool(multimodal_config and multimodal_config.get("use_visual_exp"))
     use_audio_exp = bool(multimodal_config and multimodal_config.get("use_audio_exp"))
+    selected_media_inputs = _get_selected_media_inputs(multimodal_config)
     for i,sent in enumerate(conv['sentences']):
         param = conv['speakers'][i] if data_name == "meld" else conv['genders'][i]
         sent_name = get_speaker_name(s_id, param, data_name)
@@ -705,8 +772,9 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
                 "*Audio Descriptions* refer to prosodic features of the speaker's utterance, including pitch, variability, energy, voice stability, tone quality, and background noise. These acoustic characteristics provide additional cues about the speaker's emotional state and delivery style.\n"
             )
         if use_multimodal_chat:
+            media_instruction_phrase = _format_media_input_phrase(selected_media_inputs, definite=False)
             note += (
-                "*Multimodal Input Instruction* A video clip and a separately extracted audio clip of the current target utterance may be provided together with the transcript-based context. "
+                f"*Multimodal Input Instruction* {media_instruction_phrase.capitalize()} may be provided together with the transcript-based context. "
                 "Use the transcript, facial expressions, visible actions, and prosodic cues jointly. If different modalities conflict, prioritize the evidence that is most directly tied to the current speaker's target utterance. "
                 "Do not mention the modalities in the final answer. Return only one emotion label from the available set.\n"
             )
@@ -766,7 +834,8 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         prompt_feature_prefix = f"{prompt_feature_text}, " if prompt_feature_text else ""
 
         if use_multimodal_chat:
-            q_msg = (f'Based on the conversation context, the target utterance video clip, the separately provided audio clip, '
+            media_prompt_phrase = _format_media_input_phrase(selected_media_inputs, definite=True)
+            q_msg = (f'Based on the conversation context, {media_prompt_phrase}, '
                      f'{prompt_feature_prefix}similar emotional expressions, '
                      f'Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, '
                      f'which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\"? '
@@ -780,8 +849,9 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
 
         video_path = None
         audio_path = None
+        image_path = None
         if use_multimodal_chat and data_name == "meld":
-            video_path, audio_path = _build_meld_media_paths(s_id, i, multimodal_config, d_type)
+            video_path, audio_path, image_path = _build_meld_media_paths(s_id, i, multimodal_config, d_type)
 
         full_system_msg = system_msg + note + local_context_msg + visual_expression_msg + audio_description_msg + desc_msg_2 + desc_msg + implicit_info_msg + demonstration_str + labels_msg
         if use_multimodal_chat:
@@ -791,6 +861,7 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
                 label_msg,
                 video_path=video_path,
                 audio_path=audio_path,
+                image_path=image_path,
             )
         else:
             messages = [
@@ -808,6 +879,8 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
             sample["video_path"] = video_path
         if audio_path is not None:
             sample["audio_path"] = audio_path
+        if image_path is not None:
+            sample["image_path"] = image_path
         samples.append(sample)
         
     return samples 
@@ -902,12 +975,18 @@ def process(paths_folder_preprocessed_data, args):
         "multimodal_chat_format": getattr(args, "multimodal_chat_format", False),
         "use_visual_exp": getattr(args, "use_visual_exp", False),
         "use_audio_exp": getattr(args, "use_audio_exp", False),
+        "video_input": getattr(args, "video_input", False),
+        "image_input": getattr(args, "image_input", False),
+        "audio_input": getattr(args, "audio_input", False),
         "meld_train_video_dir": getattr(args, "meld_train_video_dir", None),
         "meld_valid_video_dir": getattr(args, "meld_valid_video_dir", None),
         "meld_test_video_dir": getattr(args, "meld_test_video_dir", None),
         "meld_train_audio_dir": getattr(args, "meld_train_audio_dir", None),
         "meld_valid_audio_dir": getattr(args, "meld_valid_audio_dir", None),
         "meld_test_audio_dir": getattr(args, "meld_test_audio_dir", None),
+        "meld_train_image_dir": getattr(args, "meld_train_image_dir", None),
+        "meld_valid_image_dir": getattr(args, "meld_valid_image_dir", None),
+        "meld_test_image_dir": getattr(args, "meld_test_image_dir", None),
         "meld_sentiment_csv_map": {
             "train": getattr(args, "meld_train_sentiment_csv", DEFAULT_MELD_SENTIMENT_CSVS["train"]),
             "valid": getattr(args, "meld_valid_sentiment_csv", DEFAULT_MELD_SENTIMENT_CSVS["valid"]),
@@ -1154,6 +1233,12 @@ if __name__=="__main__":
                         help='Force regenerate data even if exists')
     parser.add_argument('--multimodal_chat_format', action='store_true',
                         help='Emit Qwen2.5 Omni style structured message content and media paths')
+    parser.add_argument('--video_input', action='store_true',
+                        help='Include video input paths in the multimodal user message')
+    parser.add_argument('--image_input', action='store_true',
+                        help='Include image input paths in the multimodal user message')
+    parser.add_argument('--audio_input', action='store_true',
+                        help='Include audio input paths in the multimodal user message')
     parser.add_argument('--use_audio_exp', action='store_true',
                         help='Include audio-description features in the text prompt when available')
     parser.add_argument('--use_visual_exp', action='store_true',
@@ -1170,6 +1255,12 @@ if __name__=="__main__":
                         help='MELD valid audio directory')
     parser.add_argument('--meld_test_audio_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD_audio/test',
                         help='MELD test audio directory')
+    parser.add_argument('--meld_train_image_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD_face_crops/train',
+                        help='MELD train face-crop image directory')
+    parser.add_argument('--meld_valid_image_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD_face_crops/dev',
+                        help='MELD valid face-crop image directory')
+    parser.add_argument('--meld_test_image_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD_face_crops/test',
+                        help='MELD test face-crop image directory')
     parser.add_argument('--meld_train_sentiment_csv', type=str, default=DEFAULT_MELD_SENTIMENT_CSVS["train"],
                         help='MELD train sentiment CSV path')
     parser.add_argument('--meld_valid_sentiment_csv', type=str, default=DEFAULT_MELD_SENTIMENT_CSVS["valid"],
@@ -1183,13 +1274,25 @@ if __name__=="__main__":
     
     # Generate paths for train/valid/test
     feature_suffix_parts = []
+    media_input_suffix_parts = []
+    if args.video_input:
+        media_input_suffix_parts.append("video")
+    if args.image_input:
+        media_input_suffix_parts.append("image")
+    if args.audio_input:
+        media_input_suffix_parts.append("audio")
+
     if args.use_audio_exp:
         feature_suffix_parts.append("Aud")
     if args.use_visual_exp:
         feature_suffix_parts.append("Vis")
     if args.include_auxiliary_labels:
         feature_suffix_parts.append("Aux_Labels")
-    feature_suffix = "_" + "_".join(feature_suffix_parts) if feature_suffix_parts else ""
+    if args.multimodal_chat_format and not media_input_suffix_parts:
+        media_input_suffix_parts = ["video", "audio"]
+
+    suffix_parts = media_input_suffix_parts + feature_suffix_parts
+    feature_suffix = "_" + "_".join(suffix_parts) if suffix_parts else ""
     output_suffix = f"{feature_suffix}_Omni.jsonl" if args.multimodal_chat_format else f"{feature_suffix}.jsonl"
     paths = [
         f"{args.data_folder}/{args.data_name}.{d_type}.0shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}{output_suffix}"
