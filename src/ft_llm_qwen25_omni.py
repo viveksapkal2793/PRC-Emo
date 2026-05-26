@@ -60,6 +60,7 @@ except ImportError as exc:
     ) from exc
 
 
+QWEN_MIN_IMAGE_SIDE = 28
 torch.serialization.add_safe_globals([np.ndarray])
 _original_torch_load = torch.load
 
@@ -157,6 +158,8 @@ def iter_media_paths_from_content(content) -> Iterable[Tuple[str, str]]:
                 yield "video", item["video"]
             elif item.get("type") == "audio" and item.get("audio"):
                 yield "audio", item["audio"]
+            elif item.get("type") == "image" and item.get("image"):
+                yield "image", item["image"]
 
 
 def extract_media_paths(sample) -> List[Tuple[str, str]]:
@@ -167,6 +170,8 @@ def extract_media_paths(sample) -> List[Tuple[str, str]]:
         media_paths.append(("video", sample["video_path"]))
     if sample.get("audio_path"):
         media_paths.append(("audio", sample["audio_path"]))
+    if sample.get("image_path"):
+        media_paths.append(("image", sample["image_path"]))
 
     deduped = []
     seen = set()
@@ -214,6 +219,38 @@ def validate_audio_file(audio_path: str, media_cache: dict) -> Tuple[bool, Optio
     return result
 
 
+def validate_image_file(image_path: str, media_cache: dict) -> Tuple[bool, Optional[str]]:
+    cache_key = ("image", image_path)
+    if cache_key in media_cache:
+        return media_cache[cache_key]
+
+    if not os.path.exists(image_path):
+        result = (False, f"missing image file: {image_path}")
+        media_cache[cache_key] = result
+        return result
+
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as img:
+            img.verify()
+        with Image.open(image_path) as img:
+            img.load()
+            width, height = img.size
+        if width < QWEN_MIN_IMAGE_SIDE or height < QWEN_MIN_IMAGE_SIDE:
+            result = (
+                False,
+                f"image too small for Qwen image processor: width={width}, height={height}, min_side={QWEN_MIN_IMAGE_SIDE}",
+            )
+        else:
+            result = (True, None)
+    except Exception as exc:
+        result = (False, f"{type(exc).__name__}: {exc}")
+
+    media_cache[cache_key] = result
+    return result
+
+
 def filter_invalid_media_records(records, split_name: str, validate_media: bool = True, media_cache: Optional[dict] = None):
     if not validate_media:
         return records
@@ -230,8 +267,10 @@ def filter_invalid_media_records(records, split_name: str, validate_media: bool 
         for media_type, media_path in sample_media:
             if media_type == "video":
                 valid, reason = validate_video_file(media_path, media_cache)
-            else:
+            elif media_type == "audio":
                 valid, reason = validate_audio_file(media_path, media_cache)
+            else:
+                valid, reason = validate_image_file(media_path, media_cache)
 
             if not valid:
                 is_valid = False

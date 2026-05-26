@@ -7,6 +7,8 @@ from typing import Iterable, List, Optional, Tuple
 
 from PIL import Image
 
+QWEN_MIN_IMAGE_SIDE = 28
+
 from ft_llm_qwen25_omni import (
     CurriculumDataset,
     JsonlMessageDataset,
@@ -185,6 +187,14 @@ def validate_image_file(image_path: str, media_cache: dict) -> Tuple[bool, Optio
             img.verify()
         with Image.open(image_path) as img:
             img.load()
+            width, height = img.size
+        if width < QWEN_MIN_IMAGE_SIDE or height < QWEN_MIN_IMAGE_SIDE:
+            result = (
+                False,
+                f"image too small for Qwen image processor: width={width}, height={height}, min_side={QWEN_MIN_IMAGE_SIDE}",
+            )
+            media_cache[cache_key] = result
+            return result
         result = (True, None)
     except Exception as exc:
         result = (False, f"{type(exc).__name__}: {exc}")
@@ -369,7 +379,12 @@ if __name__ == "__main__":
     parser.add_argument("--logging_steps", type=int, default=1)
     parser.add_argument("--optim", type=str, default="adamw_torch_fused")
     parser.add_argument("--multimodal_chat_format", action="store_true", default=True)
-    parser.add_argument("--skip_invalid_media", action="store_true", default=False)
+    parser.add_argument(
+        "--skip_invalid_media",
+        action="store_true",
+        default=False,
+        help="Skip records with missing/corrupt media or images smaller than Qwen's minimum side length.",
+    )
     parser.add_argument("--preprocessed_data_suffix", type=str, default="_Aud_Vis_Omni_text_only.jsonl")
     parser.add_argument("--meld_train_video_dir", type=str, default="/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/train_splits")
     parser.add_argument("--meld_valid_video_dir", type=str, default="/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/dev_splits_complete")
