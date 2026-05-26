@@ -111,6 +111,7 @@ def load_meld_sentiment_lookup(csv_path):
             dialogue_id = str(row["Dialogue_ID"])
             utterance_id = int(row["Utterance_ID"])
             record = {
+                "dialogue_id": dialogue_id,
                 "emotion_label": row["Emotion"].strip(),
                 "sentiment_label": row["Sentiment"].strip().lower(),
                 "speaker": row["Speaker"].strip(),
@@ -351,7 +352,7 @@ def _format_media_input_phrase(selected_inputs, definite=True):
         return f"{phrases[0]} and {phrases[1]}"
     return ", ".join(phrases[:-1]) + f", and {phrases[-1]}"
 
-def _build_meld_media_paths(s_id, utter_idx, multimodal_config, d_type):
+def _build_meld_media_paths(s_id, utter_idx, multimodal_config, d_type, dialogue_media_id=None, utterance_media_id=None):
     if multimodal_config is None:
         return None, None, None
 
@@ -374,7 +375,9 @@ def _build_meld_media_paths(s_id, utter_idx, multimodal_config, d_type):
     video_dir = video_dir_map.get(d_type)
     audio_dir = audio_dir_map.get(d_type)
     image_dir = image_dir_map.get(d_type)
-    base_name = f"dia{s_id}_utt{utter_idx}"
+    dialogue_media_id = s_id if dialogue_media_id is None else dialogue_media_id
+    utterance_media_id = utter_idx if utterance_media_id is None else utterance_media_id
+    base_name = f"dia{dialogue_media_id}_utt{utterance_media_id}"
 
     video_path = os.path.join(video_dir, f"{base_name}.mp4") if video_dir else None
     audio_path = os.path.join(audio_dir, f"{base_name}.wav") if audio_dir else None
@@ -711,7 +714,7 @@ def gen_ImplicitEmotion_V2_prompting_messages(data_name, conv, around_window, s_
         
     return samples 
 
-def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None, audio_description_data=None, multimodal_config=None):
+def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None, audio_description_data=None, multimodal_config=None, dialogue_rows=None):
     new_conv = []
     raw_utterances = conv['sentences']  # 新增：保存原始发言
     use_multimodal_chat = bool(multimodal_config and multimodal_config.get("multimodal_chat_format"))
@@ -851,7 +854,25 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         audio_path = None
         image_path = None
         if use_multimodal_chat and data_name == "meld":
-            video_path, audio_path, image_path = _build_meld_media_paths(s_id, i, multimodal_config, d_type)
+            media_dialogue_id = None
+            media_utterance_id = None
+            if dialogue_rows is not None and i < len(dialogue_rows):
+                media_dialogue_id = dialogue_rows[i].get("dialogue_id")
+                media_utterance_id = dialogue_rows[i].get("csv_utterance_id")
+            video_path, audio_path, image_path = _build_meld_media_paths(
+                s_id,
+                i,
+                multimodal_config,
+                d_type,
+                dialogue_media_id=media_dialogue_id,
+                utterance_media_id=media_utterance_id,
+            )
+            if "video" not in selected_media_inputs:
+                video_path = None
+            if "audio" not in selected_media_inputs:
+                audio_path = None
+            if "image" not in selected_media_inputs:
+                image_path = None
 
         full_system_msg = system_msg + note + local_context_msg + visual_expression_msg + audio_description_msg + desc_msg_2 + desc_msg + implicit_info_msg + demonstration_str + labels_msg
         if use_multimodal_chat:
@@ -1030,7 +1051,7 @@ def process(paths_folder_preprocessed_data, args):
         new_format = []
         meld_sentiment_lookup = (
             get_meld_sentiment_lookup(multimodal_config, d_type)
-            if include_auxiliary_labels and data_name == "meld"
+            if data_name == "meld"
             else {}
         )
         
@@ -1140,6 +1161,11 @@ def process(paths_folder_preprocessed_data, args):
             matrix, emotion_to_index = similarity_matrix.get_similarity_matrix(data_name)
         #遍历原始数据中的每条对话
         for dialogue_position, (s_id, conv) in enumerate(org_data.items()): 
+            dialogue_rows = (
+                get_meld_dialogue_rows(meld_sentiment_lookup, str(s_id), dialogue_position)
+                if data_name == "meld"
+                else []
+            )
            # 根据不同的prompting_type构造不同的参数
             if prompting_type == 'ImplicitEmotion_V3':
                 samples = process_func(
@@ -1152,7 +1178,8 @@ def process(paths_folder_preprocessed_data, args):
                     d_type,
                     visual_expression_data,
                     audio_description_data,
-                    multimodal_config
+                    multimodal_config,
+                    dialogue_rows
                 )
             elif prompting_type in ['spdescV3', 'spdescV4', 'spdescV5']:
                 samples = process_func(data_name, conv, around_window, s_id, desc_speaker_data, None, d_type)
@@ -1161,11 +1188,6 @@ def process(paths_folder_preprocessed_data, args):
                 samples = process_func(data_name, conv, around_window, s_id, desc_speaker_data)
 
             if include_auxiliary_labels:
-                dialogue_rows = (
-                    get_meld_dialogue_rows(meld_sentiment_lookup, str(s_id), dialogue_position)
-                    if data_name == "meld"
-                    else []
-                )
                 for sample_idx, sample in enumerate(samples):
                     utterance_id = int(sample.get("utterance_id", sample_idx))
                     sample["conversation_id"] = str(sample.get("conversation_id", s_id))
