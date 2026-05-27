@@ -3,6 +3,7 @@ import glob
 import json
 import os
 import shutil
+import wave
 from typing import Iterable, List, Optional, Tuple
 
 from PIL import Image
@@ -158,15 +159,29 @@ def validate_video_file(video_path: str, media_cache: dict) -> Tuple[bool, Optio
     return result
 
 
-def validate_audio_file(audio_path: str, media_cache: dict) -> Tuple[bool, Optional[str]]:
-    cache_key = ("audio", audio_path)
+def validate_audio_file(audio_path: str, media_cache: dict, max_audio_seconds: Optional[float] = None) -> Tuple[bool, Optional[str]]:
+    cache_key = ("audio", audio_path, max_audio_seconds)
     if cache_key in media_cache:
         return media_cache[cache_key]
 
     if not os.path.exists(audio_path):
         result = (False, f"missing audio file: {audio_path}")
     else:
-        result = (True, None)
+        try:
+            with wave.open(audio_path, "rb") as wav_file:
+                frame_rate = wav_file.getframerate()
+                frame_count = wav_file.getnframes()
+            duration = frame_count / frame_rate if frame_rate else 0
+            if max_audio_seconds is not None and duration > max_audio_seconds:
+                result = (
+                    False,
+                    f"audio too long for Qwen audio encoder: duration={duration:.2f}s, "
+                    f"max_audio_seconds={max_audio_seconds}",
+                )
+            else:
+                result = (True, None)
+        except Exception as exc:
+            result = (False, f"{type(exc).__name__}: {exc}")
 
     media_cache[cache_key] = result
     return result
@@ -203,7 +218,13 @@ def validate_image_file(image_path: str, media_cache: dict) -> Tuple[bool, Optio
     return result
 
 
-def filter_invalid_media_records(records, split_name: str, selected_modalities: Optional[List[str]] = None, media_cache: Optional[dict] = None):
+def filter_invalid_media_records(
+    records,
+    split_name: str,
+    selected_modalities: Optional[List[str]] = None,
+    media_cache: Optional[dict] = None,
+    max_audio_seconds: Optional[float] = None,
+):
     media_cache = media_cache if media_cache is not None else {}
     filtered_records = []
     skipped_records = []
@@ -217,7 +238,7 @@ def filter_invalid_media_records(records, split_name: str, selected_modalities: 
             if media_type == "video":
                 valid, reason = validate_video_file(media_path, media_cache)
             elif media_type == "audio":
-                valid, reason = validate_audio_file(media_path, media_cache)
+                valid, reason = validate_audio_file(media_path, media_cache, max_audio_seconds=max_audio_seconds)
             else:
                 valid, reason = validate_image_file(media_path, media_cache)
 
@@ -278,6 +299,7 @@ def load_jsonl_dataset(path, split_name: str, args, selected_modalities: List[st
             split_name=split_name,
             selected_modalities=None if args.text_only_input else (selected_modalities if selected_modalities else None),
             media_cache=media_cache,
+            max_audio_seconds=args.max_audio_seconds,
         )
 
     return JsonlMessageDataset(records)
@@ -373,6 +395,12 @@ if __name__ == "__main__":
     parser.add_argument("-video_input", "--video_input", action="store_true", default=False)
     parser.add_argument("-image_input", "--image_input", action="store_true", default=False)
     parser.add_argument("-audio_input", "--audio_input", action="store_true", default=False)
+    parser.add_argument(
+        "--max_audio_seconds",
+        type=float,
+        default=30.0,
+        help="Skip audio clips longer than this when --skip_invalid_media is enabled; set <=0 to disable.",
+    )
     parser.add_argument("--generation_max_new_tokens", type=int, default=10)
     parser.add_argument("--per_device_train_batch_size", type=int, default=1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
@@ -394,6 +422,8 @@ if __name__ == "__main__":
     parser.add_argument("--meld_test_audio_dir", type=str, default="/scratch/data/bikash_rs/Vivek/dataset/MELD_audio/test")
 
     args, unknown = parser.parse_known_args()
+    if args.max_audio_seconds is not None and args.max_audio_seconds <= 0:
+        args.max_audio_seconds = None
     if args.data_name != "meld":
         raise ValueError("This Omni modality-selection script is currently wired for MELD only.")
 
