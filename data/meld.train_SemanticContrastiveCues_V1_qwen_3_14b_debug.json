@@ -1,0 +1,326 @@
+{
+  "9": {
+    "utterances": [
+      "Chandler: What've you been up to?",
+      "Jade: Oh, you know, the usual, teaching aerobics, partying way too much.",
+      "Jade: Oh, and in case you were wondering, those are my legs on the new James Bond poster.",
+      "Chandler: Can you hold on a moment? I have another call.  I love her.",
+      "Ross: I know.",
+      "Chandler: I'm back.",
+      "Jade: So, are we gonna get together or what?",
+      "Chandler: Um, absolutely. Uh, how 'bout tomorrow afternoon? Do you know uh, Central Perk in the Village, say, five-ish?",
+      "Jade: Great, I'll see you then.",
+      "Chandler: Ok.  Ok. Having a phone has finally paid off.",
+      "Ross: Even though you do do a good Bob impression, I'm thinkin' when she sees you tomorow, she's probably gonna realize, \"Hey, you're not Bob.\"",
+      "Chandler: I'm hoping that when Bob doesn't show up, she will seek comfort in the open arms of the wry stranger at the next table.",
+      "Ross: Oh my god. You are pure evil.",
+      "Chandler: Ok, pure evil , horny and alone . I've done this"
+    ],
+    "emotion_predictions": [
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "sarcastic moral condemnation, theatrically intense delivery, humorous adversarial stance",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nJade: \"Great, I'll see you then.\" Chandler: \"Ok.  Ok. Having a phone has finally paid off.\" Ross: \"Even though you do do a good Bob impression, I'm thinkin' when she sees you tomorow, she's probably gonna realize, \"Hey, you're not Bob.\"\" Chandler: \"I'm hoping that when Bob doesn't show up, she will seek comfort in the open arms of the wry stranger at the next table.\" Ross: \"Oh my god. You are pure evil.\"\n\n### Focus Utterance\nRoss: \"Ross: \"Oh my god. You are pure evil.\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      }
+    ]
+  },
+  "0": {
+    "utterances": [
+      "Chandler: also I was the point person on my company\u0092s transition from the KL-5 to GR-6 system.",
+      "The Interviewer: You must\u0092ve had your hands full.",
+      "Chandler: That I did. That I did.",
+      "The Interviewer: So let\u0092s talk a little bit about your duties.",
+      "Chandler: My duties?  All right.",
+      "The Interviewer: Now you\u0092ll be heading a whole division, so you\u0092ll have a lot of duties.",
+      "Chandler: I see.",
+      "The Interviewer: But there\u0092ll be perhaps 30 people under you so you can dump a certain amount on them.",
+      "Chandler: Good to know.",
+      "The Interviewer: We can go into detail",
+      "Chandler: No don\u0092t I beg of you!",
+      "The Interviewer: All right then, we\u0092ll have a definite answer for you on Monday, but I think I can say with some confidence, you\u0092ll fit in well here.",
+      "Chandler: Really?!",
+      "The Interviewer: Absolutely.  You can relax"
+    ],
+    "emotion_predictions": [
+      {
+        "semantic_contrastive_cues": "restrained professional emphasis, subdued contextual elaboration, measured conversational pacing, impersonal detail orientation",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nChandler: \"also I was the point person on my company\u0092s transition from the KL-5 to GR-6 system.\"\n\n### Focus Utterance\nChandler: \"Chandler: \"also I was the point person on my company\u0092s transition from the KL-5 to GR-6 system.\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "guarded acknowledgment, measured conversational pacing, subdued interpersonal warmth, restrained topic redirection",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nChandler: \"also I was the point person on my company\u0092s transition from the KL-5 to GR-6 system.\" The Interviewer: \"You must\u0092ve had your hands full.\"\n\n### Focus Utterance\nThe Interviewer: \"The Interviewer: \"You must\u0092ve had your hands full.\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "guarded responsiveness, curtailed elaboration, subdued engagement",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nChandler: \"also I was the point person on my company\u0092s transition from the KL-5 to GR-6 system.\" The Interviewer: \"You must\u0092ve had your hands full.\" Chandler: \"That I did. That I did.\" The Interviewer: \"So let\u0092s talk a little bit about your duties.\" Chandler: \"My duties?  All right.\"\n\n### Focus Utterance\nChandler: \"Chandler: \"My duties?  All right.\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "defensive urgency, conversational abruptness, interpersonal pushback, emotional escalation",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nChandler: \"I see.\" The Interviewer: \"But there\u0092ll be perhaps 30 people under you so you can dump a certain amount on them.\" Chandler: \"Good to know.\" The Interviewer: \"We can go into detail\" Chandler: \"No don\u0092t I beg of you!\"\n\n### Focus Utterance\nChandler: \"Chandler: \"No don\u0092t I beg of you!\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "abrupt tonal pivot, interrogative sarcasm, truncated affective engagement, reactive detachment",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nChandler: \"Good to know.\" The Interviewer: \"We can go into detail\" Chandler: \"No don\u0092t I beg of you!\" The Interviewer: \"All right then, we\u0092ll have a definite answer for you on Monday, but I think I can say with some confidence, you\u0092ll fit in well here.\" Chandler: \"Really?!\"\n\n### Focus Utterance\nChandler: \"Chandler: \"Really?!\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      }
+    ]
+  },
+  "2": {
+    "utterances": [
+      "Chandler: Hey, Mon.",
+      "Monica: Hey-hey-hey. You wanna hear something that sucks.",
+      "Chandler: Do I ever.",
+      "Monica: Chris says they\u0092re closing down the bar.",
+      "Chandler: No way!",
+      "Monica: Yeah, apparently they\u0092re turning it into some kinda coffee place.",
+      "Chandler: Just coffee! Where are we gonna hang out now?",
+      "Monica: Got me.",
+      "Chandler: Can I get a beer.",
+      "Monica: Hey, did you pick a roommate?",
+      "Chandler: You betcha!",
+      "Monica: Is it the Italian guy?",
+      "Chandler: Um-mm, yeah right!"
+    ],
+    "emotion_predictions": [
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "defensive brevity, detached responsiveness, restrained conversational engagement",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nChandler: \"Hey, Mon.\" Monica: \"Hey-hey-hey. You wanna hear something that sucks.\" Chandler: \"Do I ever.\"\n\n### Focus Utterance\nChandler: \"Chandler: \"Do I ever.\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "restrained factual delivery, minimal expressive emphasis, emotionally detached conveyance, stable narrative pacing",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nChandler: \"Hey, Mon.\" Monica: \"Hey-hey-hey. You wanna hear something that sucks.\" Chandler: \"Do I ever.\" Monica: \"Chris says they\u0092re closing down the bar.\"\n\n### Focus Utterance\nMonica: \"Monica: \"Chris says they\u0092re closing down the bar.\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "expressive intensity, conversational tension, emotional escalation",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nChandler: \"Do I ever.\" Monica: \"Chris says they\u0092re closing down the bar.\" Chandler: \"No way!\" Monica: \"Yeah, apparently they\u0092re turning it into some kinda coffee place.\" Chandler: \"Just coffee! Where are we gonna hang out now?\"\n\n### Focus Utterance\nChandler: \"Chandler: \"Just coffee! Where are we gonna hang out now?\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "defensive affirmation, avoidant certainty, disengaged commitment",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nChandler: \"Just coffee! Where are we gonna hang out now?\" Monica: \"Got me.\" Chandler: \"Can I get a beer.\" Monica: \"Hey, did you pick a roommate?\" Chandler: \"You betcha!\"\n\n### Focus Utterance\nChandler: \"Chandler: \"You betcha!\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      }
+    ]
+  },
+  "1": {
+    "utterances": [
+      "Joey: But then who? The waitress I went out with last month?",
+      "Rachel: You know? Forget it!",
+      "Joey: No-no-no-no, no! Who, who were you talking about?",
+      "Rachel: No, I-I-I-I don't, I actually don't know",
+      "Joey: Ok!",
+      "Joey: All right, well...",
+      "Rachel: Yeah, sure!"
+    ],
+    "emotion_predictions": [
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "abrupt conversational closure, minimal interactive engagement, emotionally detached dismissal",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nJoey: \"But then who? The waitress I went out with last month?\" Rachel: \"You know? Forget it!\"\n\n### Focus Utterance\nRachel: \"Rachel: \"You know? Forget it!\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "hesitant articulation, self-corrective adjustment, subdued conversational energy",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nJoey: \"But then who? The waitress I went out with last month?\" Rachel: \"You know? Forget it!\" Joey: \"No-no-no-no, no! Who, who were you talking about?\" Rachel: \"No, I-I-I-I don't, I actually don't know\"\n\n### Focus Utterance\nRachel: \"Rachel: \"No, I-I-I-I don't, I actually don't know\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      }
+    ]
+  },
+  "6": {
+    "utterances": [
+      "Chandler: Good job Joe! Well done! Top notch!",
+      "Joey: You liked it? You really liked it?",
+      "Chandler: Oh-ho-ho, yeah!",
+      "Joey: Which part exactly?",
+      "Chandler: The whole thing! Can we go?",
+      "Joey: Oh no-no-no, give me some specifics.",
+      "Chandler: I love the specifics, the specifics were the best part!",
+      "Joey: Hey, what about the scene with the kangaroo? Did-did you like that part?",
+      "Chandler: I was surprised to see a kangaroo in a World War I epic.",
+      "Joey: You fell asleep!!",
+      "Joey: There was no kangaroo!",
+      "Joey: They didn\u0092t take any of my suggestions!",
+      "Joey: That\u0092s for coming buddy.",
+      "Joey: I\u0092ll see you later.",
+      "Chandler: Don\u0092t go!",
+      "Chandler: I\u0092m sorry.",
+      "Chandler: I\u0092m so sorry!",
+      "Chandler: Look!",
+      "Chandler: This guy fell asleep!",
+      "Chandler: He fell asleep too!",
+      "Chandler: Be mad at him!",
+      "Chandler: Or, call an ambulance."
+    ],
+    "emotion_predictions": [
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "interrogative urgency, persistent inquiry, resistance to premature closure, heightened conversational pressure, probing curiosity",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nJoey: \"You liked it? You really liked it?\" Chandler: \"Oh-ho-ho, yeah!\" Joey: \"Which part exactly?\" Chandler: \"The whole thing! Can we go?\" Joey: \"Oh no-no-no, give me some specifics.\"\n\n### Focus Utterance\nJoey: \"Joey: \"Oh no-no-no, give me some specifics.\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "abrupt tonal shift, confrontational phrasing, elevated expressive intensity, contrasts with prior detachment",
+        "prompt": "You are an expert in analyzing subtle emotional behavior and conversational emotional dynamics through dialogue context.\n\n### Task\n\n1. Generate semantic contrastive cues that capture subtle emotional characteristics which help distinguish the speaker's emotional behavior from semantically similar emotional expressions.\n2. Focus on discriminative emotional characteristics rather than explicit emotion labels.\n3. You MUST take into account the entire past conversation context, including what the current speaker and other speakers have said earlier.\n\n### Important Requirements\n\n1. Do NOT use explicit emotion labels such as: anger, sadness, fear, joy, surprise, disgust, neutral\nSemantic contrastive cues should: focus on emotional style and conversational behavior\n1. avoid full sentences\n2. be concise semantic phrases\n3. be provided as a single comma-separated string\n4. remain under 30 total words\n5. Focus on characteristics such as: emotional restraint, hesitation, conversational tension, emotional stability, interpersonal warmth, defensiveness, expressive intensity, emotional withdrawal, supportive engagement, emotional escalation\n\n### Conversation Context\nJoey: \"Oh no-no-no, give me some specifics.\" Chandler: \"I love the specifics, the specifics were the best part!\" Joey: \"Hey, what about the scene with the kangaroo? Did-did you like that part?\" Chandler: \"I was surprised to see a kangaroo in a World War I epic.\" Joey: \"You fell asleep!!\"\n\n### Focus Utterance\nJoey: \"Joey: \"You fell asleep!!\"\"\n\n### Required JSON Format\n{\n\"SemanticContrastiveCues\": \"\"\n}\n\n### Critical Rules\n\n1. Output ONLY the JSON object\n2. No explanations/thinking processes\n3. No markdown/code formatting\n4. Keys must be exactly as shown\n5. Do NOT use explicit emotion labels anywhere in the output\n\nExample Valid Response:\n{\n\"SemanticContrastiveCues\": \"restrained reassurance, low expressive enthusiasm, stable conversational tone, limited emotional escalation\"\n}"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      },
+      {
+        "semantic_contrastive_cues": "No prediction"
+      }
+    ]
+  }
+}
