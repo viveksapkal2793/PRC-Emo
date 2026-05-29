@@ -714,7 +714,7 @@ def gen_ImplicitEmotion_V2_prompting_messages(data_name, conv, around_window, s_
         
     return samples 
 
-def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None, audio_description_data=None, multimodal_config=None, dialogue_rows=None):
+def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None, audio_description_data=None, multimodal_config=None, dialogue_rows=None, contrastive_cues_data=None, include_contrastive_cues=False):
     new_conv = []
     raw_utterances = conv['sentences']  # 新增：保存原始发言
     use_multimodal_chat = bool(multimodal_config and multimodal_config.get("multimodal_chat_format"))
@@ -747,6 +747,11 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         emotion_surface = desc_speaker_data[s_id][i]['surface_emotion'].replace("\n", " ")
         emotion_implicit = desc_speaker_data[s_id][i]['implicit_emotion'].replace("\n", " ")
         desc2 = desc_speaker_data[s_id][i]['desc2'].replace("\n", " ")
+        contrastive_cues = None
+        if include_contrastive_cues and contrastive_cues_data is not None:
+            cues_by_conv = contrastive_cues_data.get(str(s_id)) or contrastive_cues_data.get(s_id)
+            if isinstance(cues_by_conv, list) and i < len(cues_by_conv):
+                contrastive_cues = cues_by_conv[i]
         # 从检索库中查找相似情感样本（训练集排除自身）
         similar_samples = retrieve_similar_samples(
             query_text=raw_utterance,
@@ -781,6 +786,11 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
                 "Use the transcript, facial expressions, visible actions, and prosodic cues jointly. If different modalities conflict, prioritize the evidence that is most directly tied to the current speaker's target utterance. "
                 "Do not mention the modalities in the final answer. Return only one emotion label from the available set.\n"
             )
+        if contrastive_cues:
+            note += (
+                "*Semantic Contrastive Cues* refer to concise emotional and conversational characteristics that help distinguish a speaker's emotional behavior from other semantically similar emotional expressions. "
+                "Semantic Contrastive Cues highlight discriminative traits. These cues help identify subtle emotional boundaries and reduce confusion between closely related emotions.\n"
+            )
         
         desc_msg = f"\n### Given the speaker's Explicit Emotion Interpretation and Implicit Emotion Interpretation in the utterance \'{conv['sentences'][i]}\':"
         implicit_info_msg = (
@@ -793,6 +803,14 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
             f"- {desc2}\n"
         )
         desc_msg_2 = f'\n### Given the characteristic of this speaker: {desc_info_msg}\n'
+        contrastive_cues_msg = ""
+        include_contrastive_in_prompt = False
+        if contrastive_cues:
+            contrastive_cues_msg = (
+                "\n### Semantic Contrastive Cues for the speaker in this utterance:\n"
+                f"- {contrastive_cues}\n"
+            )
+            include_contrastive_in_prompt = True
         visual_expression_msg = ""
         if use_visual_exp and visual_expression_data is not None:
             visual_info = visual_expression_data.get(str(s_id), {})
@@ -835,17 +853,18 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         )
         prompt_feature_text = _join_prompt_features(enabled_prompt_features)
         prompt_feature_prefix = f"{prompt_feature_text}, " if prompt_feature_text else ""
+        contrastive_q_fragment = "Semantic Contrastive Cues, " if include_contrastive_in_prompt else ""
 
         if use_multimodal_chat:
             media_prompt_phrase = _format_media_input_phrase(selected_media_inputs, definite=True)
             q_msg = (f'Based on the conversation context, {media_prompt_phrase}, '
                      f'{prompt_feature_prefix}similar emotional expressions, '
-                     f'Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, '
+                     f'{contrastive_q_fragment}Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, '
                      f'which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\"? '
                      f'Respond with only one label from the available emotion labels.')
         else:
             q_msg = (f'Based on above conversation, {prompt_feature_prefix}similar emotional expressions, '
-                     f'Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, '
+                     f'{contrastive_q_fragment}Explicit Emotion Interpretation, Implicit Emotion Interpretation and characteristic, '
                      f'which emotional label of {speaker_name} in the utterance \"{conv["sentences"][i]}\".')
         
         label_msg = get_label_map(data_name)[conv['labels'][i]]
@@ -874,7 +893,7 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
             if "image" not in selected_media_inputs:
                 image_path = None
 
-        full_system_msg = system_msg + note + local_context_msg + visual_expression_msg + audio_description_msg + desc_msg_2 + desc_msg + implicit_info_msg + demonstration_str + labels_msg
+        full_system_msg = system_msg + note + local_context_msg + visual_expression_msg + audio_description_msg + desc_msg_2 + desc_msg + implicit_info_msg + contrastive_cues_msg + demonstration_str + labels_msg
         if use_multimodal_chat:
             messages = _build_multimodal_messages(
                 full_system_msg,
@@ -1047,6 +1066,23 @@ def process(paths_folder_preprocessed_data, args):
             if prompting_type == 'ImplicitEmotion_V3' and multimodal_config["use_audio_exp"]
             else None
         )
+        include_contrastive_cues = bool(getattr(args, "include_contrastive_cues", False))
+        contrastive_cues_data = None
+        if include_contrastive_cues and prompting_type == 'ImplicitEmotion_V3':
+            cues_prompt_type = "SemanticContrastiveCues_V1"
+            cues_path = f'{folder_data}/{data_name}.{d_type}_{cues_prompt_type}_{extract_prompting_llm_id}.json'
+            if os.path.exists(cues_path):
+                contrastive_raw = json.load(open(cues_path))
+                contrastive_cues_data = {
+                    str(conv_id): [
+                        pred.get("semantic_contrastive_cues", "")
+                        for pred in conv_data.get("emotion_predictions", [])
+                    ]
+                    for conv_id, conv_data in contrastive_raw.items()
+                }
+            else:
+                print(f"- Semantic contrastive cues file not found: {cues_path}. Skipping cues.")
+                include_contrastive_cues = False
         
         new_format = []
         meld_sentiment_lookup = (
@@ -1179,7 +1215,9 @@ def process(paths_folder_preprocessed_data, args):
                     visual_expression_data,
                     audio_description_data,
                     multimodal_config,
-                    dialogue_rows
+                    dialogue_rows,
+                    contrastive_cues_data=contrastive_cues_data,
+                    include_contrastive_cues=include_contrastive_cues,
                 )
             elif prompting_type in ['spdescV3', 'spdescV4', 'spdescV5']:
                 samples = process_func(data_name, conv, around_window, s_id, desc_speaker_data, None, d_type)
@@ -1291,6 +1329,8 @@ if __name__=="__main__":
                         help='MELD test sentiment CSV path')
     parser.add_argument('--include_auxiliary_labels', action='store_true',
                         help='Add emotion_label and sentiment_label fields to generated JSONL samples')
+    parser.add_argument('--include_contrastive_cues', action='store_true',
+                        help='Include semantic contrastive cues in prompts and output filename')
     
     args = parser.parse_args()
     
@@ -1310,6 +1350,8 @@ if __name__=="__main__":
         feature_suffix_parts.append("Vis")
     if args.include_auxiliary_labels:
         feature_suffix_parts.append("Aux_Labels")
+    if args.include_contrastive_cues:
+        feature_suffix_parts.append("con")
     if args.multimodal_chat_format and not media_input_suffix_parts:
         media_input_suffix_parts = ["video", "audio"]
 
