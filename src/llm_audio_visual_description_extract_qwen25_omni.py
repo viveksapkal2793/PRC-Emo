@@ -72,7 +72,17 @@ Output ONLY the JSON object.
 No explanations or thinking processes.
 No markdown or code formatting.
 Keys must be exactly as shown.
- Minimize emotional interpretation and focus on observable visual behavior.
+Focus on observable visual behavior.
+Do NOT use emotion labels, emotional states, or emotional descriptors such as:
+anger, sadness, fear, joy, surprise, disgust, neutral, happy, upset, calm, excited, worried, frustrated.
+
+Example Invalid Response:
+{{
+  "VisualDescription": "The speaker maintains a neutral facial expression, ..."
+}}
+
+Reason:
+This describes an emotional state rather than observable behavior.
 
 Example Valid Response:
 {{
@@ -105,7 +115,15 @@ Output ONLY the JSON object.
 No explanations or thinking processes.
 No markdown or code formatting.
 Keys must be exactly as shown.
- Minimize emotional interpretation and focus on observable vocal behavior.
+Focus on observable vocal behavior.
+Do NOT use emotion labels, emotional states, or emotional descriptors such as:
+anger, sadness, fear, joy, surprise, disgust, neutral, happy, upset, calm, excited, worried, frustrated.
+
+
+Example Invalid Response:
+{{
+  "AudioDescription": "The speaker sounds angry and upset, with a raised voice and fast speaking rate..."
+}}
 
 Example Valid Response:
 {{

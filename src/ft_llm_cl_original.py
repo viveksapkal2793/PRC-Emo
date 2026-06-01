@@ -8,6 +8,7 @@ import sys
 from sklearn.metrics import classification_report
 from datasets import load_dataset, Dataset
 import torch
+import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments
 from trl import setup_chat_format, set_seed as trl_seed
 from peft import LoraConfig, AutoPeftModelForCausalLM
@@ -144,6 +145,10 @@ class SimplifiedTrainer(SFTTrainer):
         )
         self.eval_dataset = self._process_raw_data(kwargs.get('eval_dataset', None))
         print("len(eval dataset) = ",  len(self.eval_dataset))
+        trainer_args = kwargs.get('args')
+        self.use_focal_loss = getattr(trainer_args, "use_focal_loss", False) if trainer_args is not None else False
+        self.focal_gamma = getattr(trainer_args, "focal_gamma", 2.0) if trainer_args is not None else 2.0
+        self.focal_alpha = getattr(trainer_args, "focal_alpha", 1.0) if trainer_args is not None else 1.0
     
     def _process_raw_data(self, dataset):
         """数据预处理流水线"""
@@ -172,6 +177,31 @@ class SimplifiedTrainer(SFTTrainer):
             eval_dataset = self._process_raw_data(eval_dataset)
             
         return super().get_eval_dataloader(eval_dataset)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if not self.use_focal_loss:
+            return super().compute_loss(model, inputs, return_outputs=return_outputs, num_items_in_batch=num_items_in_batch)
+
+        labels = inputs.get("labels")
+        outputs = model(**inputs)
+        logits = outputs.logits
+        loss = self._focal_loss(logits, labels, gamma=self.focal_gamma, alpha=self.focal_alpha)
+        return (loss, outputs) if return_outputs else loss
+
+    def _focal_loss(self, logits, labels, gamma=2.0, alpha=1.0, ignore_index=-100):
+        vocab_size = logits.size(-1)
+        logits = logits.view(-1, vocab_size)
+        labels = labels.view(-1)
+        valid_mask = labels.ne(ignore_index)
+        if not torch.any(valid_mask):
+            return torch.tensor(0.0, device=logits.device)
+        logits = logits[valid_mask]
+        labels = labels[valid_mask]
+        log_probs = F.log_softmax(logits, dim=-1)
+        log_probs = log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+        probs = log_probs.exp()
+        loss = -alpha * (1.0 - probs).pow(gamma) * log_probs
+        return loss.mean()
     
     def evaluation_loop(
         self,
@@ -290,6 +320,9 @@ if __name__=='__main__':
     parser.add_argument('--bucket_number', type=int, default=8, help='number of buckets for curriculum learning')
     parser.add_argument('--curriculum_update_epochs', type=int, default=None, help='epochs between curriculum updates')
     parser.add_argument('--logging_steps', type=int, default=1, help='training log frequency in optimizer steps')
+    parser.add_argument('--use_focal_loss', action="store_true", default=False, help='use focal loss for training')
+    parser.add_argument('--focal_gamma', type=float, default=2.0, help='focal loss gamma')
+    parser.add_argument('--focal_alpha', type=float, default=1.0, help='focal loss alpha')
 
     args, unknown = parser.parse_known_args()
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -299,7 +332,7 @@ if __name__=='__main__':
     
     set_random_seed(args.seed)
     
-    all_path_folder_preprocessed_data = [f"{args.data_folder}/{args.data_name}.{d_type}.{args.kshot}shot_w{args.window}_{args.prompting_type}.jsonl" \
+    all_path_folder_preprocessed_data = [f"{args.data_folder}/{args.data_name}.{d_type}.{args.kshot}shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}.jsonl" \
         for d_type in [ 'train' , 'valid',  'test']]
     if args.re_gen_data:
         process(all_path_folder_preprocessed_data, args) 

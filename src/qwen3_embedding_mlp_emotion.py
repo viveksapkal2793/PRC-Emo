@@ -25,7 +25,8 @@ else:
 
 MELD_LABELS = ["neutral", "surprise", "fear", "sadness", "joy", "disgust", "anger"]
 IEMOCAP_LABELS = ["happy", "sad", "neutral", "angry", "excited", "frustrated"]
-TASK_INSTRUCTION = "Represent the emotional state and conversational behavior of the target utterance."
+UTTERANCE_TASK_INSTRUCTION = "Represent the emotional state of the utterance."
+CONTEXT_TASK_INSTRUCTION = "Represent the emotional state and conversational behavior of the target utterance."
 
 
 @dataclass
@@ -189,12 +190,14 @@ def build_embedding_input(
     reference_similar: str,
     args: argparse.Namespace,
 ) -> str:
+    include_context = args.include_conversation_context or args.include_target_speaker
+    instruction = CONTEXT_TASK_INSTRUCTION if include_context else UTTERANCE_TASK_INSTRUCTION
     sections = [
-        f"Instruct: {TASK_INSTRUCTION}",
-        f"Conversation Context:\n{context}",
+        f"Instruct: {instruction}",
         f"Target Utterance:\n\"{target_utterance}\"",
     ]
-    if args.include_target_speaker:
+    if include_context:
+        sections.insert(1, f"Conversation Context:\n{context}")
         sections.insert(2, f"Target Speaker:\n{target_speaker}")
     if args.include_explicit_emotion:
         sections.append(f"Explicit Emotion:\n{explicit or 'Not available.'}")
@@ -516,9 +519,9 @@ def save_checkpoint(model: EmotionMLP, args: argparse.Namespace, labels: Sequenc
     save_dir.mkdir(parents=True, exist_ok=True)
     section_bits = []
     for name, enabled in [
+        ("context", args.include_conversation_context or args.include_target_speaker),
         ("explicit", args.include_explicit_emotion),
         ("implicit", args.include_implicit_emotion),
-        ("targetspeaker", args.include_target_speaker),
         ("speaker", args.include_speaker_description),
         ("visual", args.include_visual_description),
         ("audio", args.include_audio_description),
@@ -527,7 +530,7 @@ def save_checkpoint(model: EmotionMLP, args: argparse.Namespace, labels: Sequenc
     ]:
         if enabled:
             section_bits.append(name)
-    section_suffix = "_".join(section_bits) if section_bits else "ctx_utt"
+    section_suffix = "_".join(section_bits) if section_bits else "utt"
     filename = f"qwen3_embedding_8b_{args.dataset}_mlp_{args.num_labels}cls_{section_suffix}.pt"
     path = save_dir / filename
     torch.save(
@@ -609,7 +612,12 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--include_explicit_emotion", action="store_true")
     parser.add_argument("--include_implicit_emotion", action="store_true")
-    parser.add_argument("--include_target_speaker", action="store_true")
+    parser.add_argument(
+        "--include_conversation_context",
+        action="store_true",
+        help="Include Conversation Context and Target Speaker, and use the conversational-behavior instruction.",
+    )
+    parser.add_argument("--include_target_speaker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--include_speaker_description", action="store_true")
     parser.add_argument("--include_visual_description", action="store_true")
     parser.add_argument("--include_audio_description", action="store_true")
