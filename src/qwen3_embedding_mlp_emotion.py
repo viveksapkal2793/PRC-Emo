@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import BatchSampler, DataLoader, Dataset, TensorDataset
 from tqdm.auto import tqdm
 
 try:
@@ -312,8 +312,42 @@ def load_embedding_model(args: argparse.Namespace):
     model = AutoModel.from_pretrained(args.model_path, **model_kwargs)
     if not torch.cuda.is_available():
         model.to("cpu")
-    model.eval()
+    if args.lora_contrastive_finetune and args.mode in {"train_eval", "train"}:
+        model.train()
+    else:
+        model.eval()
     return tokenizer, model
+
+
+def apply_lora_to_embedding_model(model, args: argparse.Namespace):
+    try:
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    except ImportError as exc:
+        raise ImportError("LoRA contrastive fine-tuning requires peft.") from exc
+
+    if hasattr(model, "config"):
+        model.config.use_cache = False
+
+    if args.load_in_4bit or args.load_in_8bit:
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=args.gradient_checkpointing)
+    elif args.gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
+
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
+
+    target_modules = [module.strip() for module in args.lora_target_modules.split(",") if module.strip()]
+    lora_config = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        target_modules=target_modules,
+    )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+    model.train()
+    return model
 
 
 @torch.no_grad()
@@ -326,6 +360,8 @@ def embed_texts(
 ) -> torch.Tensor:
     all_embeddings = []
     device = model.device
+    was_training = model.training
+    model.eval()
     for start in tqdm(range(0, len(texts), args.embed_batch_size), desc=f"Embedding {split_name}"):
         batch_texts = list(texts[start : start + args.embed_batch_size])
         batch = tokenizer(
@@ -337,9 +373,20 @@ def embed_texts(
         ).to(device)
         outputs = model(**batch)
         embeddings = last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
-        embeddings = F.normalize(embeddings, p=2, dim=1)
+        if args.l2_normalize:
+            embeddings = F.normalize(embeddings, p=2, dim=1)
         all_embeddings.append(embeddings.detach().float().cpu())
+    if was_training:
+        model.train()
     return torch.cat(all_embeddings, dim=0)
+
+
+def encode_batch(batch: Dict[str, torch.Tensor], model, args: argparse.Namespace) -> torch.Tensor:
+    outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+    embeddings = last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
+    if args.l2_normalize:
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+    return embeddings
 
 
 def print_embedding_debug(
@@ -422,6 +469,105 @@ def make_classification_report(y_true: np.ndarray, y_pred: np.ndarray, labels: S
     return "\n".join(rows)
 
 
+class TextEmotionDataset(Dataset):
+    def __init__(self, samples: Sequence[EmotionSample], label_ids: torch.Tensor):
+        self.samples = list(samples)
+        self.label_ids = label_ids
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> Tuple[str, torch.Tensor]:
+        return self.samples[idx].text, self.label_ids[idx]
+
+
+def make_text_collator(tokenizer, args: argparse.Namespace):
+    def collate(batch: Sequence[Tuple[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        texts = [item[0] for item in batch]
+        labels = torch.stack([item[1] for item in batch]).long()
+        max_length = args.lora_max_length if args.lora_contrastive_finetune and args.lora_max_length else args.max_length
+        tokenized = tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        tokenized["labels"] = labels
+        return tokenized
+
+    return collate
+
+
+class BalancedPairBatchSampler(BatchSampler):
+    def __init__(self, label_ids: torch.Tensor, batch_size: int):
+        if batch_size < 2:
+            raise ValueError("--lora_batch_size must be at least 2 for supervised contrastive learning.")
+        self.label_ids = label_ids.cpu()
+        self.batch_size = batch_size
+        self.class_to_indices = {
+            int(label): torch.where(self.label_ids == label)[0].tolist()
+            for label in torch.unique(self.label_ids)
+        }
+        self.classes = list(self.class_to_indices.keys())
+        self.num_batches = int(np.ceil(len(self.label_ids) / batch_size))
+
+    def __iter__(self):
+        for _ in range(self.num_batches):
+            batch = []
+            pairs_needed = max(1, self.batch_size // 2)
+            if len(self.classes) >= 2:
+                replace_classes = pairs_needed > len(self.classes)
+                selected_positions = np.random.choice(len(self.classes), size=pairs_needed, replace=replace_classes)
+                selected_classes = [self.classes[int(pos)] for pos in selected_positions]
+            else:
+                selected_classes = [self.classes[0]] * pairs_needed
+
+            for class_id in selected_classes:
+                indices = self.class_to_indices[class_id]
+                replace = len(indices) < 2
+                sampled = np.random.choice(indices, size=2, replace=replace).tolist()
+                batch.extend(int(idx) for idx in sampled)
+
+            while len(batch) < self.batch_size:
+                class_id = random.choice(self.classes)
+                batch.append(int(random.choice(self.class_to_indices[class_id])))
+            random.shuffle(batch)
+            yield batch[: self.batch_size]
+
+    def __len__(self) -> int:
+        return self.num_batches
+
+
+def supervised_contrastive_loss(
+    embeddings: torch.Tensor,
+    labels: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    if embeddings.size(0) < 2:
+        return embeddings.new_tensor(0.0)
+    if labels.unique().numel() < 2:
+        return embeddings.new_tensor(0.0)
+
+    embeddings = F.normalize(embeddings, p=2, dim=1)
+    labels = labels.view(-1, 1)
+    positive_mask = torch.eq(labels, labels.T).float().to(embeddings.device)
+    logits_mask = torch.ones_like(positive_mask) - torch.eye(positive_mask.size(0), device=embeddings.device)
+    positive_mask = positive_mask * logits_mask
+
+    positives_per_anchor = positive_mask.sum(dim=1)
+    valid_anchor_mask = positives_per_anchor > 0
+    if not valid_anchor_mask.any():
+        return embeddings.new_tensor(0.0)
+
+    logits = torch.matmul(embeddings, embeddings.T) / temperature
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+    exp_logits = torch.exp(logits) * logits_mask
+    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-12))
+    mean_log_prob_pos = (positive_mask * log_prob).sum(dim=1) / positives_per_anchor.clamp_min(1.0)
+    return -mean_log_prob_pos[valid_anchor_mask].mean()
+
+
 def train_mlp(
     train_embeddings: torch.Tensor,
     train_labels: torch.Tensor,
@@ -480,6 +626,145 @@ def train_mlp(
     return model
 
 
+def train_lora_contrastive(
+    embedding_model,
+    tokenizer,
+    train_samples: Sequence[EmotionSample],
+    train_labels: torch.Tensor,
+    valid_samples: Sequence[EmotionSample],
+    valid_labels: Optional[torch.Tensor],
+    args: argparse.Namespace,
+) -> EmotionMLP:
+    device = embedding_model.device
+    mlp = EmotionMLP(args.embedding_dim, args.num_labels, args.dropout).to(device)
+    train_dataset = TextEmotionDataset(train_samples, train_labels)
+    class_counts = torch.bincount(train_labels, minlength=args.num_labels)
+    print(f"LoRA SupCon class counts: {class_counts.tolist()}")
+    if args.lora_batch_size < 2 * int((class_counts > 0).sum().item()):
+        print(
+            "Warning: --lora_batch_size cannot include all classes with positive pairs in every batch. "
+            "The balanced pair sampler still forces same-label positives and rotates classes across batches."
+        )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_sampler=BalancedPairBatchSampler(train_labels, args.lora_batch_size),
+        collate_fn=make_text_collator(tokenizer, args),
+    )
+
+    valid_loader = None
+    if valid_samples and valid_labels is not None:
+        valid_loader = DataLoader(
+            TextEmotionDataset(valid_samples, valid_labels),
+            batch_size=args.embed_batch_size,
+            shuffle=False,
+            collate_fn=make_text_collator(tokenizer, args),
+        )
+
+    trainable_params = [param for param in embedding_model.parameters() if param.requires_grad]
+    if not trainable_params:
+        raise ValueError(
+            "No trainable LoRA parameters were found. Check --lora_target_modules for this embedding model."
+        )
+    optimizer = torch.optim.AdamW(
+        [{"params": trainable_params, "lr": args.lora_lr}, {"params": mlp.parameters(), "lr": args.lr}],
+        weight_decay=args.weight_decay,
+    )
+
+    best_state = None
+    best_valid_loss = float("inf")
+    for epoch in range(1, args.epochs + 1):
+        embedding_model.train()
+        mlp.train()
+        total_ce = 0.0
+        total_supcon = 0.0
+        total_loss = 0.0
+        total_correct = 0
+        total_seen = 0
+
+        optimizer.zero_grad(set_to_none=True)
+        for batch in tqdm(train_loader, desc=f"LoRA SupCon epoch {epoch}/{args.epochs}"):
+            batch = {key: value.to(device) for key, value in batch.items()}
+            y = batch.pop("labels")
+            embeddings = encode_batch(batch, embedding_model, args)
+            logits = mlp(embeddings)
+            ce_loss = F.cross_entropy(logits, y)
+            supcon_loss = supervised_contrastive_loss(embeddings, y, args.supcon_temperature)
+            loss = ce_loss + args.supcon_lambda * supcon_loss
+            (loss / args.lora_grad_accum_steps).backward()
+
+            is_update_step = (total_seen // y.size(0) + 1) % args.lora_grad_accum_steps == 0
+            is_last_step = (total_seen + y.size(0)) >= len(train_loader) * args.lora_batch_size
+            if is_update_step or is_last_step:
+                torch.nn.utils.clip_grad_norm_(trainable_params + list(mlp.parameters()), args.max_grad_norm)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
+            total_ce += ce_loss.item() * y.size(0)
+            total_supcon += supcon_loss.item() * y.size(0)
+            total_loss += loss.item() * y.size(0)
+            total_correct += (logits.argmax(dim=-1) == y).sum().item()
+            total_seen += y.size(0)
+
+        train_loss = total_loss / max(total_seen, 1)
+        train_ce = total_ce / max(total_seen, 1)
+        train_supcon = total_supcon / max(total_seen, 1)
+        train_acc = total_correct / max(total_seen, 1)
+
+        valid_loss = None
+        valid_acc = None
+        if valid_loader is not None:
+            valid_embeddings, valid_y = embed_from_loader(valid_loader, tokenizer, embedding_model, args, "valid-lora")
+            valid_loss, valid_acc, _ = predict_mlp(mlp, valid_embeddings, valid_y, args)
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                best_state = {
+                    "mlp": {k: v.detach().cpu().clone() for k, v in mlp.state_dict().items()},
+                    "lora": {k: v.detach().cpu().clone() for k, v in embedding_model.state_dict().items() if "lora_" in k},
+                }
+
+        if valid_loss is None:
+            print(
+                f"Epoch {epoch}: train_loss={train_loss:.4f} ce={train_ce:.4f} "
+                f"supcon={train_supcon:.4f} train_acc={train_acc:.4f}"
+            )
+        else:
+            print(
+                f"Epoch {epoch}: train_loss={train_loss:.4f} ce={train_ce:.4f} "
+                f"supcon={train_supcon:.4f} train_acc={train_acc:.4f} "
+                f"valid_loss={valid_loss:.4f} valid_acc={valid_acc:.4f}"
+            )
+
+    if best_state is not None:
+        mlp.load_state_dict(best_state["mlp"])
+        embedding_model.load_state_dict(best_state["lora"], strict=False)
+    return mlp
+
+
+@torch.no_grad()
+def embed_from_loader(
+    loader: DataLoader,
+    tokenizer,
+    embedding_model,
+    args: argparse.Namespace,
+    split_name: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    del tokenizer
+    was_training = embedding_model.training
+    embedding_model.eval()
+    device = embedding_model.device
+    all_embeddings = []
+    all_labels = []
+    for batch in tqdm(loader, desc=f"Embedding {split_name}"):
+        batch = {key: value.to(device) for key, value in batch.items()}
+        y = batch.pop("labels")
+        embeddings = encode_batch(batch, embedding_model, args)
+        all_embeddings.append(embeddings.detach().float().cpu())
+        all_labels.append(y.detach().cpu())
+    if was_training:
+        embedding_model.train()
+    return torch.cat(all_embeddings, dim=0), torch.cat(all_labels, dim=0)
+
+
 @torch.no_grad()
 def predict_mlp(
     model: EmotionMLP,
@@ -514,10 +799,10 @@ def predict_mlp(
     return loss_value, acc_value, np.array(preds)
 
 
-def save_checkpoint(model: EmotionMLP, args: argparse.Namespace, labels: Sequence[str]) -> Path:
-    save_dir = Path(args.output_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
+def get_section_suffix(args: argparse.Namespace) -> str:
     section_bits = []
+    if args.lora_contrastive_finetune:
+        section_bits.append("lora_supcon")
     for name, enabled in [
         ("context", args.include_conversation_context or args.include_target_speaker),
         ("explicit", args.include_explicit_emotion),
@@ -530,9 +815,23 @@ def save_checkpoint(model: EmotionMLP, args: argparse.Namespace, labels: Sequenc
     ]:
         if enabled:
             section_bits.append(name)
-    section_suffix = "_".join(section_bits) if section_bits else "utt"
-    filename = f"qwen3_embedding_8b_{args.dataset}_mlp_{args.num_labels}cls_{section_suffix}.pt"
+    return "_".join(section_bits) if section_bits else "utt"
+
+
+def get_run_stem(args: argparse.Namespace) -> str:
+    return f"qwen3_embedding_8b_{args.dataset}_mlp_{args.num_labels}cls_{get_section_suffix(args)}"
+
+
+def save_checkpoint(model: EmotionMLP, args: argparse.Namespace, labels: Sequence[str], embedding_model=None) -> Path:
+    save_dir = Path(args.output_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{get_run_stem(args)}.pt"
     path = save_dir / filename
+    lora_adapter_path = None
+    if args.lora_contrastive_finetune and embedding_model is not None and hasattr(embedding_model, "save_pretrained"):
+        lora_adapter_path = save_dir / f"{get_run_stem(args)}_lora_adapter"
+        embedding_model.save_pretrained(lora_adapter_path)
+        print(f"Saved LoRA adapter to {lora_adapter_path}")
     torch.save(
         {
             "model_state_dict": model.state_dict(),
@@ -540,11 +839,167 @@ def save_checkpoint(model: EmotionMLP, args: argparse.Namespace, labels: Sequenc
             "num_labels": args.num_labels,
             "labels": list(labels),
             "args": vars(args),
+            "lora_adapter_path": str(lora_adapter_path) if lora_adapter_path is not None else None,
         },
         path,
     )
     print(f"Saved MLP checkpoint to {path}")
     return path
+
+
+def get_class_colors(num_labels: int) -> List[str]:
+    palette = [
+        "#1f77b4",
+        "#d62728",
+        "#2ca02c",
+        "#ff7f0e",
+        "#9467bd",
+        "#17becf",
+        "#e377c2",
+        "#8c564b",
+        "#bcbd22",
+        "#7f7f7f",
+    ]
+    return palette[:num_labels]
+
+
+def compute_projection(
+    method: str,
+    embeddings: np.ndarray,
+    labels_np: np.ndarray,
+    seed: int,
+) -> Tuple[np.ndarray, float]:
+    try:
+        from sklearn.decomposition import PCA
+        from sklearn.manifold import TSNE
+        from sklearn.metrics import silhouette_score
+    except Exception as exc:
+        raise ImportError(
+            "Embedding analysis requires scikit-learn for PCA, t-SNE, and silhouette score."
+        ) from exc
+
+    if len(embeddings) < 2:
+        projection = np.zeros((len(embeddings), 2), dtype=np.float32)
+    elif method == "pca":
+        projection = PCA(n_components=2, random_state=seed).fit_transform(embeddings)
+    elif method == "tsne":
+        if len(embeddings) < 4:
+            projection = PCA(n_components=2, random_state=seed).fit_transform(embeddings)
+        else:
+            perplexity = min(30, max(2, (len(embeddings) - 1) // 3))
+            perplexity = min(perplexity, len(embeddings) - 1)
+            projection = TSNE(
+                n_components=2,
+                perplexity=perplexity,
+                init="pca",
+                learning_rate="auto",
+                random_state=seed,
+            ).fit_transform(embeddings)
+    elif method == "umap":
+        if len(embeddings) < 4:
+            projection = PCA(n_components=2, random_state=seed).fit_transform(embeddings)
+        else:
+            try:
+                import umap
+            except Exception as exc:
+                raise ImportError("Embedding analysis requires umap-learn for UMAP visualization.") from exc
+            n_neighbors = min(15, max(2, len(embeddings) - 1))
+            projection = umap.UMAP(
+                n_components=2,
+                n_neighbors=n_neighbors,
+                min_dist=0.1,
+                metric="cosine",
+                random_state=seed,
+            ).fit_transform(embeddings)
+    else:
+        raise ValueError(f"Unknown projection method: {method}")
+
+    unique_labels = np.unique(labels_np)
+    if len(unique_labels) < 2 or len(unique_labels) >= len(labels_np):
+        silhouette = float("nan")
+    else:
+        silhouette = float(silhouette_score(embeddings, labels_np, metric="cosine"))
+    return projection, silhouette
+
+
+def add_color_key(fig, labels: Sequence[str], colors: Sequence[str]) -> None:
+    fig.text(0.06, 0.018, "Class colors:", ha="left", va="center", fontsize=14, fontweight="bold")
+    x = 0.17
+    step = 0.80 / max(len(labels), 1)
+    for label, color in zip(labels, colors):
+        fig.text(x, 0.018, label, ha="left", va="center", fontsize=14, color=color, fontweight="bold")
+        x += step
+
+
+def save_embedding_analysis(
+    split_payloads: Dict[str, Tuple[Sequence[EmotionSample], torch.Tensor, torch.Tensor]],
+    labels: Sequence[str],
+    args: argparse.Namespace,
+) -> Path:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:
+        raise ImportError("Embedding analysis requires matplotlib.") from exc
+
+    methods = [("tsne", "t-SNE"), ("pca", "PCA"), ("umap", "UMAP")]
+    split_order = ["train", "valid", "test"]
+    colors = get_class_colors(len(labels))
+    fig, axes = plt.subplots(len(split_order), len(methods), figsize=(27, 24))
+    row_silhouettes: Dict[str, float] = {}
+
+    for row_idx, split_name in enumerate(split_order):
+        samples, embeddings, y = split_payloads[split_name]
+        x_np = embeddings.numpy()
+        x_np = x_np / np.clip(np.linalg.norm(x_np, axis=1, keepdims=True), 1e-12, None)
+        y_np = y.numpy()
+        for col_idx, (method_key, method_title) in enumerate(methods):
+            ax = axes[row_idx, col_idx]
+            projection, silhouette = compute_projection(method_key, x_np, y_np, args.seed)
+            row_silhouettes.setdefault(split_name, silhouette)
+            for label_idx, label_name in enumerate(labels):
+                mask = y_np == label_idx
+                if mask.any():
+                    ax.scatter(
+                        projection[mask, 0],
+                        projection[mask, 1],
+                        s=13,
+                        alpha=0.78,
+                        color=colors[label_idx],
+                        linewidths=0,
+                    )
+            ax.set_title(f"{split_name.upper()} - {method_title}", fontsize=18, fontweight="bold")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_xlabel("")
+            ax.set_ylabel("")
+            ax.grid(False)
+
+    fig.subplots_adjust(left=0.035, right=0.985, top=0.955, bottom=0.08, hspace=0.26, wspace=0.055)
+    for row_idx, split_name in enumerate(split_order):
+        row_axes = axes[row_idx, :]
+        bottom = min(ax.get_position().y0 for ax in row_axes)
+        silhouette = row_silhouettes.get(split_name, float("nan"))
+        silhouette_text = "nan" if np.isnan(silhouette) else f"{silhouette:.4f}"
+        fig.text(
+            0.5,
+            bottom - 0.018,
+            f"{split_name.upper()} silhouette score: {silhouette_text}",
+            ha="center",
+            va="top",
+            fontsize=16,
+            fontweight="bold",
+        )
+    add_color_key(fig, labels, colors)
+
+    output_dir = Path("/scratch/data/bikash_rs/Vivek/PRC-Emo/analysis/embed_analysis")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{get_run_stem(args)}_embedding_analysis.png"
+    fig.savefig(output_path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved embedding analysis visualization to {output_path}")
+    return output_path
 
 
 def load_checkpoint(path: Path, args: argparse.Namespace, labels: Sequence[str]) -> EmotionMLP:
@@ -558,6 +1013,21 @@ def load_checkpoint(path: Path, args: argparse.Namespace, labels: Sequence[str])
     checkpoint_labels = checkpoint.get("labels")
     if checkpoint_labels and list(checkpoint_labels) != list(labels):
         print(f"Warning: checkpoint labels {checkpoint_labels} differ from current labels {list(labels)}")
+    return model
+
+
+def load_lora_adapter_from_checkpoint(path: Path, embedding_model):
+    checkpoint = torch.load(path, map_location="cpu")
+    lora_adapter_path = checkpoint.get("lora_adapter_path")
+    if not lora_adapter_path:
+        return embedding_model
+    try:
+        from peft import PeftModel
+    except ImportError as exc:
+        raise ImportError("Loading a LoRA adapter checkpoint requires peft.") from exc
+    print(f"Loading LoRA adapter from {lora_adapter_path}")
+    model = PeftModel.from_pretrained(embedding_model, lora_adapter_path)
+    model.eval()
     return model
 
 
@@ -637,7 +1107,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--debug_samples", type=int, default=3)
     parser.add_argument("--force_cpu_mlp", action="store_true")
-    return parser.parse_args()
+    parser.add_argument("--l2_normalize", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--embedding_analysis",
+        action="store_true",
+        help="Save t-SNE, PCA, and UMAP embedding analysis plots for train/valid/test splits.",
+    )
+    parser.add_argument(
+        "--lora_contrastive_finetune",
+        action="store_true",
+        help="Fine-tune the embedding model with LoRA using CE + supervised contrastive loss.",
+    )
+    parser.add_argument("--supcon_lambda", type=float, default=0.1)
+    parser.add_argument("--supcon_temperature", type=float, default=0.07)
+    parser.add_argument("--lora_lr", type=float, default=2e-5)
+    parser.add_argument("--lora_batch_size", type=int, default=8)
+    parser.add_argument("--lora_grad_accum_steps", type=int, default=8)
+    parser.add_argument("--lora_max_length", type=int, default=512)
+    parser.add_argument("--lora_r", type=int, default=16)
+    parser.add_argument("--lora_alpha", type=int, default=32)
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
+    parser.add_argument("--lora_target_modules", default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj")
+    parser.add_argument("--gradient_checkpointing", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    args = parser.parse_args()
+    if args.dataset == "iemocap":
+        args.train_file = args.train_file.replace("meld", "iemocap")
+        args.valid_file = args.valid_file.replace("meld", "iemocap")
+        args.test_file = args.test_file.replace("meld", "iemocap")
+    if args.lora_batch_size < 2:
+        raise ValueError("--lora_batch_size must be at least 2.")
+    if args.lora_grad_accum_steps < 1:
+        raise ValueError("--lora_grad_accum_steps must be at least 1.")
+    return args
 
 
 def main() -> None:
@@ -655,31 +1157,68 @@ def main() -> None:
     test_path = root / args.test_file if args.test_file and not Path(args.test_file).is_absolute() else Path(args.test_file) if args.test_file else None
 
     tokenizer, embedding_model = load_embedding_model(args)
+    if args.lora_contrastive_finetune and args.mode in {"train_eval", "train"}:
+        embedding_model = apply_lora_to_embedding_model(embedding_model, args)
 
     classifier = None
+    analysis_payloads: Dict[str, Tuple[Sequence[EmotionSample], torch.Tensor, torch.Tensor]] = {}
+    split_paths = {"train": train_path, "valid": valid_path, "test": test_path}
+
+    def load_embed_split(split_name: str) -> Tuple[Sequence[EmotionSample], torch.Tensor, torch.Tensor]:
+        split_path = split_paths[split_name]
+        if split_path is None or not split_path.exists():
+            raise FileNotFoundError(f"{split_name} file not found: {split_path}")
+        samples = load_samples(split_path, args, labels)
+        print(f"Loaded {len(samples)} {split_name} samples.")
+        embeddings = embed_texts([s.text for s in samples], tokenizer, embedding_model, args, split_name)
+        y = labels_to_ids(samples, label_to_id)
+        return samples, embeddings, y
+
     if args.mode in {"train_eval", "train"}:
         train_samples = load_samples(train_path, args, labels)
         valid_samples = load_samples(valid_path, args, labels) if valid_path and valid_path.exists() else []
         print(f"Loaded {len(train_samples)} train samples and {len(valid_samples)} valid samples.")
 
-        train_embeddings = embed_texts([s.text for s in train_samples], tokenizer, embedding_model, args, "train")
         train_y = labels_to_ids(train_samples, label_to_id)
-        print_embedding_debug(train_samples, train_embeddings, args.debug_samples, "train")
+        valid_y = labels_to_ids(valid_samples, label_to_id) if valid_samples else None
 
-        valid_embeddings = None
-        valid_y = None
-        if valid_samples:
-            valid_embeddings = embed_texts([s.text for s in valid_samples], tokenizer, embedding_model, args, "valid")
-            valid_y = labels_to_ids(valid_samples, label_to_id)
-            print_embedding_debug(valid_samples, valid_embeddings, args.debug_samples, "valid")
+        if args.lora_contrastive_finetune:
+            classifier = train_lora_contrastive(
+                embedding_model,
+                tokenizer,
+                train_samples,
+                train_y,
+                valid_samples,
+                valid_y,
+                args,
+            )
+            train_embeddings = embed_texts([s.text for s in train_samples], tokenizer, embedding_model, args, "train")
+            analysis_payloads["train"] = (train_samples, train_embeddings, train_y)
+            print_embedding_debug(train_samples, train_embeddings, args.debug_samples, "train")
+            if valid_samples:
+                valid_embeddings = embed_texts([s.text for s in valid_samples], tokenizer, embedding_model, args, "valid")
+                analysis_payloads["valid"] = (valid_samples, valid_embeddings, valid_y)
+                print_embedding_debug(valid_samples, valid_embeddings, args.debug_samples, "valid")
+        else:
+            train_embeddings = embed_texts([s.text for s in train_samples], tokenizer, embedding_model, args, "train")
+            analysis_payloads["train"] = (train_samples, train_embeddings, train_y)
+            print_embedding_debug(train_samples, train_embeddings, args.debug_samples, "train")
 
-        classifier = train_mlp(train_embeddings, train_y, valid_embeddings, valid_y, args)
-        checkpoint_path = save_checkpoint(classifier, args, labels)
+            valid_embeddings = None
+            if valid_samples:
+                valid_embeddings = embed_texts([s.text for s in valid_samples], tokenizer, embedding_model, args, "valid")
+                analysis_payloads["valid"] = (valid_samples, valid_embeddings, valid_y)
+                print_embedding_debug(valid_samples, valid_embeddings, args.debug_samples, "valid")
+
+            classifier = train_mlp(train_embeddings, train_y, valid_embeddings, valid_y, args)
+
+        checkpoint_path = save_checkpoint(classifier, args, labels, embedding_model)
         args.checkpoint = str(checkpoint_path)
 
     if args.mode == "eval":
         if not args.checkpoint:
             raise ValueError("--checkpoint is required for --mode eval.")
+        embedding_model = load_lora_adapter_from_checkpoint(Path(args.checkpoint), embedding_model)
         classifier = load_checkpoint(Path(args.checkpoint), args, labels)
 
     if args.mode in {"train_eval", "eval"}:
@@ -689,7 +1228,14 @@ def main() -> None:
         print(f"Loaded {len(test_samples)} test samples.")
         test_embeddings = embed_texts([s.text for s in test_samples], tokenizer, embedding_model, args, "test")
         test_y = labels_to_ids(test_samples, label_to_id)
+        analysis_payloads["test"] = (test_samples, test_embeddings, test_y)
         evaluate_split(classifier, test_samples, test_embeddings, test_y, labels, args, "test")
+
+    if args.embedding_analysis:
+        for split_name in ["train", "valid", "test"]:
+            if split_name not in analysis_payloads:
+                analysis_payloads[split_name] = load_embed_split(split_name)
+        save_embedding_analysis(analysis_payloads, labels, args)
 
 
 if __name__ == "__main__":

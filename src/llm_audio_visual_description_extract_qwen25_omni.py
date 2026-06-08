@@ -203,6 +203,24 @@ def parse_args():
     parser.add_argument("--meld_train_audio_dir", type=str, default=DEFAULT_AUDIO_DIRS["train"])
     parser.add_argument("--meld_valid_audio_dir", type=str, default=DEFAULT_AUDIO_DIRS["valid"])
     parser.add_argument("--meld_test_audio_dir", type=str, default=DEFAULT_AUDIO_DIRS["test"])
+    parser.add_argument(
+        "--meld_train_media_id_offset",
+        type=int,
+        default=0,
+        help="Subtract this from train JSON dialogue ids when building MELD media filenames.",
+    )
+    parser.add_argument(
+        "--meld_valid_media_id_offset",
+        type=int,
+        default=1039,
+        help="Subtract this from valid JSON dialogue ids when building MELD media filenames.",
+    )
+    parser.add_argument(
+        "--meld_test_media_id_offset",
+        type=int,
+        default=1153,
+        help="Subtract this from test JSON dialogue ids when building MELD media filenames.",
+    )
     return parser.parse_args()
 
 
@@ -220,6 +238,27 @@ def get_audio_dirs(args):
         "valid": args.meld_valid_audio_dir,
         "test": args.meld_test_audio_dir,
     }
+
+
+def get_media_id_offsets(args):
+    return {
+        "train": args.meld_train_media_id_offset,
+        "valid": args.meld_valid_media_id_offset,
+        "test": args.meld_test_media_id_offset,
+    }
+
+
+def get_media_dialogue_id(conv_id: str, split: str, media_id_offsets: Dict[str, int]):
+    try:
+        media_dialogue_id = int(conv_id) - media_id_offsets.get(split, 0)
+    except ValueError:
+        return conv_id
+    if media_dialogue_id < 0:
+        raise ValueError(
+            f"Media dialogue id became negative for split={split}, conv_id={conv_id}, "
+            f"offset={media_id_offsets.get(split, 0)}."
+        )
+    return str(media_dialogue_id)
 
 
 def build_media_path(base_dir: str, conv_id: str, utter_idx: int, suffix: str):
@@ -485,7 +524,7 @@ def run_batch_safely(model, processor, batch_items, args):
         return outputs
 
 
-def prepare_generation_items(entries, output, args, video_dirs, audio_dirs):
+def prepare_generation_items(entries, output, args, video_dirs, audio_dirs, media_id_offsets):
     items_by_utterance = []
     media_cache: Dict[Tuple[str, str], Tuple[bool, str, Optional[float]]] = {}
 
@@ -501,8 +540,10 @@ def prepare_generation_items(entries, output, args, video_dirs, audio_dirs):
         pred["visual_prompt"] = visual_prompt
         pred["audio_prompt"] = audio_prompt
 
-        video_path = build_media_path(video_dirs[type_data], conv_id, utter_idx, "mp4")
-        audio_path = build_media_path(audio_dirs[type_data], conv_id, utter_idx, "wav")
+        media_dialogue_id = get_media_dialogue_id(conv_id, type_data, media_id_offsets)
+        video_path = build_media_path(video_dirs[type_data], media_dialogue_id, utter_idx, "mp4")
+        audio_path = build_media_path(audio_dirs[type_data], media_dialogue_id, utter_idx, "wav")
+        pred["media_dialogue_id"] = media_dialogue_id
         pred["video_path"] = video_path
         pred["audio_path"] = audio_path
 
@@ -625,6 +666,7 @@ def main():
     data_preprocessor = BatchPreprocessorLLMAudioVisualDescriptions()
     video_dirs = get_video_dirs(args)
     audio_dirs = get_audio_dirs(args)
+    media_id_offsets = get_media_id_offsets(args)
 
     for split in args.splits:
         data_name_pattern = f"{dataset_name}.{split}"
@@ -652,7 +694,7 @@ def main():
             if conv_id not in output:
                 output[conv_id] = init_output_for_conversation(sample)
 
-        items_by_utterance = prepare_generation_items(entries, output, args, video_dirs, audio_dirs)
+        items_by_utterance = prepare_generation_items(entries, output, args, video_dirs, audio_dirs, media_id_offsets)
         if args.batch_by_modality:
             process_items_batched_by_modality(model, processor, output, items_by_utterance, args, output_path)
         else:
