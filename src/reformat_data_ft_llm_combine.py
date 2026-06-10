@@ -294,6 +294,42 @@ def load_dialogue_audio_descriptions(folder_data, d_type):
     with open(audio_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+def load_dialogue_llm_audio_visual_descriptions(folder_data, data_name, d_type, llm_id="qwen_2_5_omni_7b"):
+    """Load split-specific LLM-generated audio/visual descriptions if available."""
+    desc_path = os.path.join(folder_data, f"{data_name}.{d_type}_AudioVisualDescriptions_V1_{llm_id}.json")
+    if not os.path.exists(desc_path):
+        raise FileNotFoundError(f"LLM audio/visual description file not found: {desc_path}")
+
+    with open(desc_path, "r", encoding="utf-8") as f:
+        desc_data = json.load(f)
+
+    if not isinstance(desc_data, dict):
+        raise ValueError(f"Expected a dialogue-id keyed JSON object in {desc_path}")
+
+    for dialogue_id, dialogue_data in desc_data.items():
+        if not isinstance(dialogue_data, dict):
+            raise ValueError(f"Expected dialogue {dialogue_id} in {desc_path} to be a JSON object")
+        utterances = dialogue_data.get("utterances")
+        predictions = dialogue_data.get("emotion_predictions")
+        if not isinstance(utterances, list) or not isinstance(predictions, list):
+            raise ValueError(
+                f"Expected dialogue {dialogue_id} in {desc_path} to contain list fields "
+                "'utterances' and 'emotion_predictions'"
+            )
+        if len(utterances) != len(predictions):
+            raise ValueError(
+                f"Dialogue {dialogue_id} in {desc_path} has {len(utterances)} utterances "
+                f"but {len(predictions)} emotion_predictions"
+            )
+        for utterance_id, prediction in enumerate(predictions):
+            if not isinstance(prediction, dict):
+                raise ValueError(
+                    f"Expected emotion_predictions[{utterance_id}] for dialogue {dialogue_id} "
+                    f"in {desc_path} to be a JSON object"
+                )
+
+    return desc_data
+
 def _wrap_text_message(role, text):
     return {"role": role, "content": [{"type": "text", "text": text}]}
 
@@ -408,12 +444,14 @@ def _build_multimodal_messages(system_msg, user_msg, label_msg, video_path=None,
         _wrap_text_message("assistant", label_msg),
     ]
 
-def _format_feature_list(use_visual_exp=False, use_audio_exp=False):
+def _format_feature_list(use_visual_exp=False, use_audio_exp=False, use_llm_aud_vis_desc=False):
     features = []
     if use_visual_exp:
         features.append("visual expressions")
     if use_audio_exp:
         features.append("audio characteristics")
+    if use_llm_aud_vis_desc:
+        features.append("audio and visual descriptions")
     return features
 
 def _join_prompt_features(features):
@@ -714,12 +752,13 @@ def gen_ImplicitEmotion_V2_prompting_messages(data_name, conv, around_window, s_
         
     return samples 
 
-def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None, audio_description_data=None, multimodal_config=None, dialogue_rows=None, contrastive_cues_data=None, include_contrastive_cues=False):
+def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_id, desc_speaker_data, retrieval_library, d_type, visual_expression_data=None, audio_description_data=None, multimodal_config=None, dialogue_rows=None, contrastive_cues_data=None, include_contrastive_cues=False, llm_audio_visual_description_data=None):
     new_conv = []
     raw_utterances = conv['sentences']  # 新增：保存原始发言
     use_multimodal_chat = bool(multimodal_config and multimodal_config.get("multimodal_chat_format"))
     use_visual_exp = bool(multimodal_config and multimodal_config.get("use_visual_exp"))
     use_audio_exp = bool(multimodal_config and multimodal_config.get("use_audio_exp"))
+    use_llm_aud_vis_desc = bool(multimodal_config and multimodal_config.get("use_llm_aud_vis_desc"))
     selected_media_inputs = _get_selected_media_inputs(multimodal_config)
     for i,sent in enumerate(conv['sentences']):
         param = conv['speakers'][i] if data_name == "meld" else conv['genders'][i]
@@ -778,6 +817,11 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         if use_audio_exp:
             note += (
                 "*Audio Descriptions* refer to prosodic features of the speaker's utterance, including pitch, variability, energy, voice stability, tone quality, and background noise. These acoustic characteristics provide additional cues about the speaker's emotional state and delivery style.\n"
+            )
+        if use_llm_aud_vis_desc:
+            note += (
+                "*Visual Descriptions* refer to high-level observations of the speaker's visible non-verbal behavior, including facial expressiveness, gaze patterns, head movements, posture, mouth activity, and other observable visual actions. These descriptions summarize behavioral cues present in the video and may provide additional context about how the utterance is delivered.\n"
+                "*Audio Descriptions* refer to high-level observations of the speaker's vocal delivery, including speaking rate, pitch variation, vocal energy, emphasis, pauses, hesitations, articulation, and voice stability. These descriptions summarize observable acoustic characteristics that may provide additional context about how the utterance is spoken.\n"
             )
         if use_multimodal_chat:
             media_instruction_phrase = _format_media_input_phrase(selected_media_inputs, definite=False)
@@ -841,6 +885,29 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
                     f"- {current_audio_description}\n"
                 )
 
+        llm_audio_visual_description_msg = ""
+        if use_llm_aud_vis_desc and llm_audio_visual_description_data is not None:
+            av_info = llm_audio_visual_description_data.get(str(s_id), {})
+            av_predictions = av_info.get("emotion_predictions", [])
+            current_av_prediction = (
+                av_predictions[i]
+                if i < len(av_predictions)
+                else {}
+            )
+            current_visual_description = current_av_prediction.get("visual_description", "").strip()
+            current_audio_description = current_av_prediction.get("audio_description", "").strip()
+            av_description_lines = []
+            if current_visual_description:
+                av_description_lines.append(f"- Visual Description: {current_visual_description}")
+            if current_audio_description:
+                av_description_lines.append(f"- Audio Description: {current_audio_description}")
+            if av_description_lines:
+                llm_audio_visual_description_msg = (
+                    "\n### Audio and Visual Descriptions of the speaker present in this utterance:\n"
+                    + "\n".join(av_description_lines)
+                    + "\n"
+                )
+
         conv_str = "\n".join(flatten_conv[i])
         local_context_msg = (f"\n### Given the following conversation as a context \n{conv_str}\n"
                              )
@@ -850,6 +917,7 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         enabled_prompt_features = _format_feature_list(
             use_visual_exp=use_visual_exp,
             use_audio_exp=use_audio_exp,
+            use_llm_aud_vis_desc=use_llm_aud_vis_desc,
         )
         prompt_feature_text = _join_prompt_features(enabled_prompt_features)
         prompt_feature_prefix = f"{prompt_feature_text}, " if prompt_feature_text else ""
@@ -893,7 +961,7 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
             if "image" not in selected_media_inputs:
                 image_path = None
 
-        full_system_msg = system_msg + note + local_context_msg + visual_expression_msg + audio_description_msg + desc_msg_2 + desc_msg + implicit_info_msg + contrastive_cues_msg + demonstration_str + labels_msg
+        full_system_msg = system_msg + note + local_context_msg + visual_expression_msg + audio_description_msg + llm_audio_visual_description_msg + desc_msg_2 + desc_msg + implicit_info_msg + contrastive_cues_msg + demonstration_str + labels_msg
         if use_multimodal_chat:
             messages = _build_multimodal_messages(
                 full_system_msg,
@@ -1015,6 +1083,7 @@ def process(paths_folder_preprocessed_data, args):
         "multimodal_chat_format": getattr(args, "multimodal_chat_format", False),
         "use_visual_exp": getattr(args, "use_visual_exp", False),
         "use_audio_exp": getattr(args, "use_audio_exp", False),
+        "use_llm_aud_vis_desc": getattr(args, "use_llm_aud_vis_desc", False),
         "video_input": getattr(args, "video_input", False),
         "image_input": getattr(args, "image_input", False),
         "audio_input": getattr(args, "audio_input", False),
@@ -1064,6 +1133,11 @@ def process(paths_folder_preprocessed_data, args):
         audio_description_data = (
             load_dialogue_audio_descriptions(folder_data, d_type)
             if prompting_type == 'ImplicitEmotion_V3' and multimodal_config["use_audio_exp"]
+            else None
+        )
+        llm_audio_visual_description_data = (
+            load_dialogue_llm_audio_visual_descriptions(folder_data, data_name, d_type)
+            if prompting_type == 'ImplicitEmotion_V3' and multimodal_config["use_llm_aud_vis_desc"]
             else None
         )
         include_contrastive_cues = bool(getattr(args, "include_contrastive_cues", False))
@@ -1218,6 +1292,7 @@ def process(paths_folder_preprocessed_data, args):
                     dialogue_rows,
                     contrastive_cues_data=contrastive_cues_data,
                     include_contrastive_cues=include_contrastive_cues,
+                    llm_audio_visual_description_data=llm_audio_visual_description_data,
                 )
             elif prompting_type in ['spdescV3', 'spdescV4', 'spdescV5']:
                 samples = process_func(data_name, conv, around_window, s_id, desc_speaker_data, None, d_type)
@@ -1303,6 +1378,8 @@ if __name__=="__main__":
                         help='Include audio-description features in the text prompt when available')
     parser.add_argument('--use_visual_exp', action='store_true',
                         help='Include visual-expression features in the text prompt when available')
+    parser.add_argument('--use_llm_aud_vis_desc', action='store_true',
+                        help='Include LLM-generated audio and visual descriptions in the text prompt')
     parser.add_argument('--meld_train_video_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/train_splits',
                         help='MELD train video directory')
     parser.add_argument('--meld_valid_video_dir', type=str, default='/scratch/data/bikash_rs/Vivek/dataset/MELD/MELD.Raw/dev_splits_complete',
@@ -1333,6 +1410,12 @@ if __name__=="__main__":
                         help='Include semantic contrastive cues in prompts and output filename')
     
     args = parser.parse_args()
+
+    if args.use_llm_aud_vis_desc and (args.use_audio_exp or args.use_visual_exp):
+        parser.error(
+            "--use_llm_aud_vis_desc is mutually exclusive with --use_audio_exp and --use_visual_exp. "
+            "Choose either the LLM-generated audio/visual descriptions or the existing audio/visual feature flags."
+        )
     
     # Generate paths for train/valid/test
     feature_suffix_parts = []
@@ -1348,6 +1431,8 @@ if __name__=="__main__":
         feature_suffix_parts.append("Aud")
     if args.use_visual_exp:
         feature_suffix_parts.append("Vis")
+    if args.use_llm_aud_vis_desc:
+        feature_suffix_parts.append("LLM_Aud_Vis_Desc")
     if args.include_auxiliary_labels:
         feature_suffix_parts.append("Aux_Labels")
     if args.include_contrastive_cues:
