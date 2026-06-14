@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from sklearn.metrics import classification_report
+import re
 from datasets import load_dataset, Dataset
 import torch
 import torch.nn.functional as F
@@ -56,11 +57,285 @@ def set_random_seed(seed: int):
     torch.backends.cudnn.benchmark = False
     trl_seed(seed)
     transf_seed(seed)
-    
-    """将对话格式转换为模型输入"""
+
+
+def normalize_text(text: str) -> str:
+    return text.replace("\u0092", "'").replace("\u2019", "'").strip()
+
+
+def section_between(text: str, start_pattern: str, end_patterns) -> str:
+    match = re.search(start_pattern, text, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    start = match.end()
+    end = len(text)
+    for pattern in end_patterns:
+        end_match = re.search(pattern, text[start:], flags=re.IGNORECASE)
+        if end_match:
+            end = min(end, start + end_match.start())
+    return normalize_text(text[start:end])
+
+
+PROMPT_SECTION_BOUNDARY = (
+    r"\n\s*### (?:"
+    r"Given the following conversation as a context|"
+    r"Visual Expressions of the speaker present in this utterance|"
+    r"Audio Characteristics of the speaker present in this utterance|"
+    r"Audio and Visual Descriptions of the speaker present in this utterance|"
+    r"Given the characteristic of this speaker|"
+    r"Given the speaker(?:'|’)?s Explicit Emotion Interpretation and Implicit Emotion Interpretation|"
+    r"Semantic Contrastive Cues for the speaker in this utterance|"
+    r"Reference Similar Emotional Expressions|"
+    r"Available emotion labels"
+    r")"
+)
+
+
+def extract_prompt_section(text: str, start_pattern: str) -> str:
+    return section_between(text, start_pattern, [PROMPT_SECTION_BOUNDARY])
+
+
+def parse_user_target(user_text: str):
+    user_text = normalize_text(user_text)
+    match = re.search(
+        r"emotional label of\s+(.+?)\s+in the utterance\s+([\"'])(.+?)\2",
+        user_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        return normalize_text(match.group(1)), normalize_text(match.group(3))
+    return "", ""
+
+
+def build_prompt_selection(args):
+    include_context = args.include_conversation_context or args.include_target_speaker
+    return {
+        "include_context": include_context,
+        "include_explicit_emotion": args.include_explicit_emotion,
+        "include_implicit_emotion": args.include_implicit_emotion,
+        "include_speaker_description": args.include_speaker_description,
+        "include_visual_description": args.include_visual_description,
+        "include_audio_description": args.include_audio_description,
+        "include_llm_aud_vis_desc": args.include_llm_aud_vis_desc,
+        "include_semantic_contrastive_cues": args.include_semantic_contrastive_cues,
+        "include_reference_similar_emotions": args.include_reference_similar_emotions,
+    }
+
+
+def get_preprocessed_data_suffix(args):
+    """Return filename suffix used for preprocessed jsonl files."""
+    suffix = f"{args.kshot}shot_w{args.window}_{args.prompting_type}"
+    # some scripts include the extractor LLM id in the filename
+    if getattr(args, "extract_prompting_llm_id", None):
+        suffix = f"{suffix}_{args.extract_prompting_llm_id}"
+    # optional explicit suffix provided via CLI (can include leading underscore)
+    extra = getattr(args, "suffix", "") or ""
+    if extra:
+        suffix = f"{suffix}{extra}"
+    return suffix
+
+
+def build_preprocessed_data_paths(args):
+    """Build list of (train, valid, test) preprocessed JSONL paths."""
+    suffix = get_preprocessed_data_suffix(args)
+    data_folder = args.data_folder.rstrip("/")
+    return [f"{data_folder}/{args.data_name}.{d_type}.{suffix}.jsonl" for d_type in ["train", "valid", "test"]]
+
+
+def build_system_prompt(system_text: str, args) -> str:
+    selection = build_prompt_selection(args)
+    system_text = normalize_text(system_text)
+
+    intro_match = re.search(
+        r"\A(.*?)(?=\n\s*Note:\s*\*Explicit Emotion\*|\n\s*### Given the following conversation as a context|\Z)",
+        system_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    intro = normalize_text(intro_match.group(1)) if intro_match else ""
+
+    note_map = [
+        (
+            selection["include_explicit_emotion"] or selection["include_implicit_emotion"],
+            r"Note:\s*\*Explicit Emotion\*.*?\*Implicit Emotion\*.*?(?=\n\*[A-Z]|\n\s*###|\Z)",
+        ),
+        (
+            selection["include_visual_description"] and not selection["include_llm_aud_vis_desc"],
+            r"\*Visual Expressions\* refer to the non-verbal and facial cues displayed by the speaker, such as eye, eyebrow, cheek, lips and mouth movements\. These expressions often correlate with and can reinforce the emotional state being conveyed\.",
+        ),
+        (
+            selection["include_audio_description"] and not selection["include_llm_aud_vis_desc"],
+            r"\*Audio Descriptions\* refer to prosodic features of the speaker's utterance, including pitch, variability, energy, voice stability, tone quality, and background noise\. These acoustic characteristics provide additional cues about the speaker's emotional state and delivery style\.",
+        ),
+        (
+            selection["include_llm_aud_vis_desc"],
+            r"\*Visual Descriptions\* refer to high-level observations of the speaker's visible non-verbal behavior, including facial expressiveness, gaze patterns, head movements, posture, mouth activity, and other observable visual actions\..*?\*Audio Descriptions\* refer to high-level observations of the speaker's vocal delivery, including speaking rate, pitch variation, vocal energy, emphasis, pauses, hesitations, articulation, and voice stability\..*?(?=\n\*Semantic Contrastive Cues\*|\n### Given the following conversation as a context|\Z)",
+        ),
+        (
+            selection["include_semantic_contrastive_cues"],
+            r"\*Semantic Contrastive Cues\* refer to concise emotional and conversational characteristics that help distinguish a speaker's emotional behavior from other semantically similar emotional expressions\..*?reduce confusion between closely related emotions\.",
+        ),
+    ]
+
+    notes = []
+    for enabled, pattern in note_map:
+        if enabled:
+            note_text = re.search(pattern, system_text, flags=re.IGNORECASE | re.DOTALL)
+            if note_text:
+                notes.append(normalize_text(note_text.group(0)))
+
+    context = extract_prompt_section(
+        system_text,
+        r"### Given the following conversation as a context\s*",
+    )
+    visual_desc = extract_prompt_section(
+        system_text,
+        r"### Visual Expressions of the speaker present in this utterance:\s*",
+    )
+    audio_desc = extract_prompt_section(
+        system_text,
+        r"### Audio Characteristics of the speaker present in this utterance:\s*",
+    )
+    llm_audio_visual_desc = extract_prompt_section(
+        system_text,
+        r"### Audio and Visual Descriptions of the speaker present in this utterance:\s*",
+    )
+    speaker_desc = extract_prompt_section(
+        system_text,
+        r"### Given the characteristic of this speaker:\s*",
+    )
+    emotion_block = extract_prompt_section(
+        system_text,
+        r"### Given the speaker(?:'|’)?s Explicit Emotion Interpretation and Implicit Emotion Interpretation.*?:\s*",
+    )
+    semantic_cues = extract_prompt_section(
+        system_text,
+        r"### Semantic Contrastive Cues for the speaker in this utterance:\s*",
+    )
+    reference_similar = extract_prompt_section(
+        system_text,
+        r"### Reference Similar Emotional Expressions:\s*",
+    )
+    labels_block = extract_prompt_section(system_text, r"### Available emotion labels:\s*")
+
+    sections = [intro] + notes
+    if selection["include_context"] and context:
+        sections.append(f"### Given the following conversation as a context\n{context}")
+    if selection["include_visual_description"] and visual_desc:
+        sections.append(f"### Visual Expressions of the speaker present in this utterance:\n{visual_desc}")
+    if selection["include_audio_description"] and audio_desc:
+        sections.append(f"### Audio Characteristics of the speaker present in this utterance:\n{audio_desc}")
+    if selection["include_llm_aud_vis_desc"] and llm_audio_visual_desc:
+        sections.append(
+            "### Audio and Visual Descriptions of the speaker present in this utterance:\n"
+            f"{llm_audio_visual_desc}"
+        )
+    if selection["include_speaker_description"] and speaker_desc:
+        sections.append(f"### Given the characteristic of this speaker:\n{speaker_desc}")
+
+    if selection["include_explicit_emotion"] or selection["include_implicit_emotion"]:
+        speaker_match = re.search(r"### Speaker:\s*([^\n]+)", emotion_block, flags=re.IGNORECASE)
+        explicit_match = re.search(
+            r"-\s*Explicit Emotion Interpretation:\s*(.*?)(?=\n-\s*Implicit Emotion Interpretation:|\Z)",
+            emotion_block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        implicit_match = re.search(
+            r"-\s*Implicit Emotion Interpretation:\s*(.*)",
+            emotion_block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        utterance_match = re.search(
+            r"### Given the speaker(?:'|’)?s Explicit Emotion Interpretation and Implicit Emotion Interpretation "
+            r"in the utterance\s+(['\"])(.*?)\1:",
+            system_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        emotion_lines = []
+        if speaker_match:
+            emotion_lines.append(f"### Speaker: {normalize_text(speaker_match.group(1))}")
+        if selection["include_explicit_emotion"] and explicit_match:
+            emotion_lines.append(
+                f"- Explicit Emotion Interpretation: {normalize_text(explicit_match.group(1))}"
+            )
+        if selection["include_implicit_emotion"] and implicit_match:
+            emotion_lines.append(
+                f"- Implicit Emotion Interpretation: {normalize_text(implicit_match.group(1))}"
+            )
+        if emotion_lines:
+            utterance = normalize_text(utterance_match.group(2)) if utterance_match else ""
+            sections.append(
+                "### Given the speaker's Explicit Emotion Interpretation and Implicit Emotion Interpretation "
+                f"in the utterance '{utterance}':\n" + "\n".join(emotion_lines)
+            )
+
+    if selection["include_semantic_contrastive_cues"] and semantic_cues:
+        sections.append(f"### Semantic Contrastive Cues for the speaker in this utterance:\n{semantic_cues}")
+    if selection["include_reference_similar_emotions"] and reference_similar:
+        sections.append(f"### Reference Similar Emotional Expressions:\n{reference_similar}")
+    if labels_block:
+        sections.append(f"### Available emotion labels: {labels_block}")
+
+    return "\n\n".join(section for section in sections if section).rstrip() + "\n\n"
+
+
+def build_user_prompt(user_text: str, args) -> str:
+    selection = build_prompt_selection(args)
+    target_speaker, target_utterance = parse_user_target(user_text)
+    feature_bits = []
+    if selection["include_llm_aud_vis_desc"]:
+        feature_bits.append("audio and visual descriptions")
+    if selection["include_visual_description"]:
+        feature_bits.append("visual expressions")
+    if selection["include_audio_description"]:
+        feature_bits.append("audio characteristics")
+    if selection["include_reference_similar_emotions"]:
+        feature_bits.append("similar emotional expressions")
+    if selection["include_semantic_contrastive_cues"]:
+        feature_bits.append("Semantic Contrastive Cues")
+    if selection["include_speaker_description"]:
+        feature_bits.append("speaker characteristic")
+    if selection["include_explicit_emotion"]:
+        feature_bits.append("Explicit Emotion Interpretation")
+    if selection["include_implicit_emotion"]:
+        feature_bits.append("Implicit Emotion Interpretation")
+
+    if selection["include_context"]:
+        prefix = "Based on above conversation"
+    else:
+        prefix = "Based on the target utterance"
+
+    if feature_bits:
+        feature_text = ", ".join(feature_bits[:-1]) + f", and {feature_bits[-1]}" if len(feature_bits) > 1 else feature_bits[0]
+        return (
+            f'{prefix}, {feature_text}, which emotional label of {target_speaker} in the utterance "{target_utterance}".'
+        )
+    return f'{prefix}, which emotional label of {target_speaker} in the utterance "{target_utterance}".'
+
+
+def prune_prompt_messages(messages, args):
+    if len(messages) < 3:
+        return messages
+    system_text = messages[0].get("content", "")
+    user_text = messages[1].get("content", "")
+    return [
+        {"role": "system", "content": build_system_prompt(system_text, args)},
+        {"role": "user", "content": build_user_prompt(user_text, args)},
+        messages[-1],
+    ]
+
+
+"""将对话格式转换为模型输入"""
 def formatting_prompts_func(samples):
-    prompt_texts = [tokenizer.apply_chat_template(
-             sample[:-1], tokenize=False, add_generation_prompt=True) for sample in samples["messages"]]
+    prompt_texts = []
+    for sample in samples["messages"]:
+        pruned_messages = prune_prompt_messages(sample, formatting_prompts_func.args)
+        prompt_texts.append(
+            tokenizer.apply_chat_template(
+                pruned_messages[:-1],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        )
     
     print("=="*50)
     print(prompt_texts[-1])
@@ -302,6 +577,7 @@ if __name__=='__main__':
     parser.add_argument('--base_model_id', type=str, default='/usr/3Tusr/lixinran/workspace/LLM/LLM_bases/LLaMA2/', help='base llm model id')
     parser.add_argument('--extract_prompting_llm_id', type=str, default='LLaMA2', help='base llm model id')
     parser.add_argument('--epoch', type=int, default=None, help='training epoch')
+    parser.add_argument('--suffix', type=str, default='', help='additional suffix appended to preprocessed jsonl filenames (e.g. _LLM_Aud_Vis_Desc)')
     parser.add_argument('--max_steps', type=int, default=None, help='training steps')
     parser.add_argument('--lr_scheduler', type=str, default='constant', help='learning rate scheduler')
     parser.add_argument('--lr', type=float, default=2e-4, help='learning rate value')
@@ -315,6 +591,24 @@ if __name__=='__main__':
     parser.add_argument('--data_name', type=str,  help='data name in {iemocap, meld, emorynlp}', default='iemocap')
     parser.add_argument('--data_folder', type=str,  help='path folder save all data', default='./data/')
     parser.add_argument('--output_folder', type=str,  help='path folder save all data', default='./finetuned_llm/')
+    parser.add_argument('--include_explicit_emotion', action='store_true', help='Include the explicit emotion interpretation block')
+    parser.add_argument('--include_implicit_emotion', action='store_true', help='Include the implicit emotion interpretation block')
+    parser.add_argument(
+        '--include_conversation_context',
+        action='store_true',
+        help='Include the conversation context and target speaker in the prompt',
+    )
+    parser.add_argument('--include_target_speaker', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--include_speaker_description', action='store_true', help='Include the speaker description block')
+    parser.add_argument('--include_visual_description', action='store_true', help='Include visual-expression features from openface')
+    parser.add_argument('--include_audio_description', action='store_true', help='Include audio-characteristic features from opensmile')
+    parser.add_argument(
+        '--include_llm_aud_vis_desc',
+        action='store_true',
+        help='Include LLM-generated audio and visual descriptions',
+    )
+    parser.add_argument('--include_semantic_contrastive_cues', action='store_true', help='Include semantic contrastive cues')
+    parser.add_argument('--include_reference_similar_emotions', action='store_true', help='Include reference similar emotional expressions')
     # 课程学习相关参数
     parser.add_argument('--curriculum', action="store_true", help='enable curriculum learning', default=False)
     parser.add_argument('--bucket_number', type=int, default=8, help='number of buckets for curriculum learning')
@@ -325,15 +619,24 @@ if __name__=='__main__':
     parser.add_argument('--focal_alpha', type=float, default=1.0, help='focal loss alpha')
 
     args, unknown = parser.parse_known_args()
+    # Bind runtime CLI args for prompt pruning used in dataset formatting.
+    formatting_prompts_func.args = args
+    if args.include_llm_aud_vis_desc and (args.include_visual_description or args.include_audio_description):
+        raise ValueError(
+            '--include_llm_aud_vis_desc cannot be combined with --include_visual_description or --include_audio_description.'
+        )
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     if args.prompting_type == 'zeroshot':
         args.kshot = 0
     print(args)
     
     set_random_seed(args.seed)
+
+    args.use_visual_exp = args.include_visual_description
+    args.use_audio_exp = args.include_audio_description
+    args.use_llm_aud_vis_desc = args.include_llm_aud_vis_desc
     
-    all_path_folder_preprocessed_data = [f"{args.data_folder}/{args.data_name}.{d_type}.{args.kshot}shot_w{args.window}_{args.prompting_type}_{args.extract_prompting_llm_id}.jsonl" \
-        for d_type in [ 'train' , 'valid',  'test']]
+    all_path_folder_preprocessed_data = build_preprocessed_data_paths(args)
     if args.re_gen_data:
         process(all_path_folder_preprocessed_data, args) 
                     

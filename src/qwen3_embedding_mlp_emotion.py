@@ -53,6 +53,55 @@ class EmotionMLP(nn.Module):
         return self.net(x)
 
 
+class ProjectionHead(nn.Module):
+    def __init__(self, input_dim: int = 4096):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 1024),
+            nn.LayerNorm(1024),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(1024, 256),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class SupConMLPHead(nn.Module):
+    def __init__(self, num_labels: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_labels),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class ProjectionSupConClassifier(nn.Module):
+    def __init__(self, input_dim: int = 4096, num_labels: int = 7):
+        super().__init__()
+        self.projection = ProjectionHead(input_dim)
+        self.classifier = SupConMLPHead(num_labels)
+
+    def project(self, x: torch.Tensor) -> torch.Tensor:
+        return self.projection(x)
+
+    def classify(self, projected: torch.Tensor) -> torch.Tensor:
+        return self.classifier(projected)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.classify(self.project(x))
+
+    def forward_with_projection(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        projected = self.project(x)
+        return projected, self.classify(projected)
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -77,6 +126,25 @@ def section_between(text: str, start_pattern: str, end_patterns: Sequence[str]) 
     return normalize_text(text[start:end])
 
 
+PROMPT_SECTION_BOUNDARY = (
+    r"\n\s*### (?:"
+    r"Given the following conversation as a context|"
+    r"Visual Expressions of the speaker present in this utterance|"
+    r"Audio Characteristics of the speaker present in this utterance|"
+    r"Audio and Visual Descriptions of the speaker present in this utterance|"
+    r"Given the characteristic of this speaker|"
+    r"Given the speaker(?:'|’)?s Explicit Emotion Interpretation and Implicit Emotion Interpretation|"
+    r"Semantic Contrastive Cues for the speaker in this utterance|"
+    r"Reference Similar Emotional Expressions|"
+    r"Available emotion labels"
+    r")"
+)
+
+
+def extract_prompt_section(text: str, start_pattern: str) -> str:
+    return section_between(text, start_pattern, [PROMPT_SECTION_BOUNDARY])
+
+
 def parse_user_target(user_text: str) -> Tuple[str, str]:
     user_text = normalize_text(user_text)
     match = re.search(
@@ -99,49 +167,37 @@ def parse_prompt_sample(record: Dict, args: argparse.Namespace) -> Optional[Emot
     label = normalize_text(messages[-1].get("content", "")).lower()
     target_speaker, target_utterance = parse_user_target(user_text)
 
-    headings = [
-        r"\n### Visual Expressions",
-        r"\n### Audio Characteristics",
-        r"\n### Given the characteristic",
-        r"\n### Given the speaker",
-        r"\n### Semantic Contrastive Cues",
-        r"\n### Reference Similar Emotional Expressions",
-        r"\n### Available emotion labels",
-    ]
-    context = section_between(
+    context = extract_prompt_section(
         system_text,
         r"### Given the following conversation as a context\s*",
-        headings,
     )
-    speaker_desc = section_between(
+    speaker_desc = extract_prompt_section(
         system_text,
         r"### Given the characteristic of this speaker:\s*",
-        [r"\n### Given the speaker", r"\n### Visual Expressions", r"\n### Audio Characteristics", r"\n### Semantic Contrastive Cues", r"\n### Reference Similar Emotional Expressions", r"\n### Available emotion labels"],
     )
-    emotion_block = section_between(
+    emotion_block = extract_prompt_section(
         system_text,
         r"### Given the speaker(?:'|’)?s Explicit Emotion Interpretation and Implicit Emotion Interpretation.*?:\s*",
-        [r"\n### Semantic Contrastive Cues", r"\n### Reference Similar Emotional Expressions", r"\n### Available emotion labels"],
     )
-    visual_desc = section_between(
+    visual_desc = extract_prompt_section(
         system_text,
         r"### Visual Expressions of the speaker present in this utterance:\s*",
-        [r"\n### Audio Characteristics", r"\n### Given the characteristic", r"\n### Given the speaker", r"\n### Semantic Contrastive Cues", r"\n### Reference Similar Emotional Expressions", r"\n### Available emotion labels"],
     )
-    audio_desc = section_between(
+    audio_desc = extract_prompt_section(
         system_text,
         r"### Audio Characteristics of the speaker present in this utterance:\s*",
-        [r"\n### Visual Expressions", r"\n### Given the characteristic", r"\n### Given the speaker", r"\n### Semantic Contrastive Cues", r"\n### Reference Similar Emotional Expressions", r"\n### Available emotion labels"],
     )
-    semantic_cues = section_between(
+    llm_audio_visual_desc = extract_prompt_section(
+        system_text,
+        r"### Audio and Visual Descriptions of the speaker present in this utterance:\s*",
+    )
+    semantic_cues = extract_prompt_section(
         system_text,
         r"### Semantic Contrastive Cues for the speaker in this utterance:\s*",
-        [r"\n### Reference Similar Emotional Expressions", r"\n### Available emotion labels"],
     )
-    reference_similar = section_between(
+    reference_similar = extract_prompt_section(
         system_text,
         r"### Reference Similar Emotional Expressions:\s*",
-        [r"\n### Available emotion labels"],
     )
 
     explicit = ""
@@ -170,6 +226,7 @@ def parse_prompt_sample(record: Dict, args: argparse.Namespace) -> Optional[Emot
         speaker_desc=speaker_desc,
         visual_desc=visual_desc,
         audio_desc=audio_desc,
+        llm_audio_visual_desc=llm_audio_visual_desc,
         semantic_cues=semantic_cues,
         reference_similar=reference_similar,
         args=args,
@@ -186,6 +243,7 @@ def build_embedding_input(
     speaker_desc: str,
     visual_desc: str,
     audio_desc: str,
+    llm_audio_visual_desc: str,
     semantic_cues: str,
     reference_similar: str,
     args: argparse.Namespace,
@@ -199,16 +257,18 @@ def build_embedding_input(
     if include_context:
         sections.insert(1, f"Conversation Context:\n{context}")
         sections.insert(2, f"Target Speaker:\n{target_speaker}")
-    if args.include_explicit_emotion:
-        sections.append(f"Explicit Emotion:\n{explicit or 'Not available.'}")
-    if args.include_implicit_emotion:
-        sections.append(f"Implicit Emotion:\n{implicit or 'Not available.'}")
-    if args.include_speaker_description:
-        sections.append(f"Speaker Description:\n{speaker_desc or 'Not available.'}")
     if args.include_visual_description:
         sections.append(f"Visual Description:\n{visual_desc or 'Not available.'}")
     if args.include_audio_description:
         sections.append(f"Audio Description:\n{audio_desc or 'Not available.'}")
+    if args.include_llm_aud_vis_desc:
+        sections.append(f"Audio and Visual Descriptions:\n{llm_audio_visual_desc or 'Not available.'}")
+    if args.include_speaker_description:
+        sections.append(f"Speaker Description:\n{speaker_desc or 'Not available.'}")
+    if args.include_explicit_emotion:
+        sections.append(f"Explicit Emotion:\n{explicit or 'Not available.'}")
+    if args.include_implicit_emotion:
+        sections.append(f"Implicit Emotion:\n{implicit or 'Not available.'}")
     if args.include_semantic_contrastive_cues:
         sections.append(f"Semantic Contrastive Cues:\n{semantic_cues or 'Not available.'}")
     if args.include_reference_similar_emotions:
@@ -247,6 +307,7 @@ def parse_dialogue_json(path: Path, args: argparse.Namespace, labels: Sequence[s
                 speaker_desc="",
                 visual_desc="",
                 audio_desc="",
+                llm_audio_visual_desc="",
                 semantic_cues="",
                 reference_similar="",
                 args=args,
@@ -405,6 +466,19 @@ def print_embedding_debug(
         print(f"True label: {samples[idx].label}")
         if preds is not None:
             print(f"Predicted label: {preds[idx]}")
+
+
+def print_prompt_debug(samples: Sequence[EmotionSample], limit: int, prefix: str) -> None:
+    count = min(limit, len(samples))
+    for idx in range(count):
+        print("=" * 100)
+        print(f"{prefix} prompt {idx}")
+        print(samples[idx].text)
+        print(f"True label: {samples[idx].label}")
+
+
+def _normalize_embedding_batch(x: torch.Tensor) -> torch.Tensor:
+    return F.normalize(x, p=2, dim=1)
 
 
 def labels_to_ids(samples: Sequence[EmotionSample], label_to_id: Dict[str, int]) -> torch.Tensor:
@@ -740,6 +814,78 @@ def train_lora_contrastive(
     return mlp
 
 
+def train_proj_supcon(
+    train_embeddings: torch.Tensor,
+    train_labels: torch.Tensor,
+    valid_embeddings: Optional[torch.Tensor],
+    valid_labels: Optional[torch.Tensor],
+    args: argparse.Namespace,
+) -> ProjectionSupConClassifier:
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.force_cpu_mlp else "cpu")
+    model = ProjectionSupConClassifier(args.embedding_dim, args.num_labels).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    train_loader = DataLoader(
+        TensorDataset(train_embeddings, train_labels),
+        batch_size=args.mlp_batch_size,
+        shuffle=True,
+    )
+
+    best_state = None
+    best_valid_loss = float("inf")
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        total_loss = 0.0
+        total_ce = 0.0
+        total_supcon = 0.0
+        total_correct = 0
+        total_seen = 0
+        for x, y in tqdm(train_loader, desc=f"ProjSupCon epoch {epoch}/{args.epochs}"):
+            x = _normalize_embedding_batch(x.to(device))
+            y = y.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            projected, logits = model.forward_with_projection(x)
+            ce_loss = F.cross_entropy(logits, y)
+            supcon_loss = supervised_contrastive_loss(projected, y, args.supcon_temperature)
+            loss = ce_loss + args.supcon_lambda * supcon_loss
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item() * y.size(0)
+            total_ce += ce_loss.item() * y.size(0)
+            total_supcon += supcon_loss.item() * y.size(0)
+            total_correct += (logits.argmax(dim=-1) == y).sum().item()
+            total_seen += y.size(0)
+
+        train_loss = total_loss / max(total_seen, 1)
+        train_ce = total_ce / max(total_seen, 1)
+        train_supcon = total_supcon / max(total_seen, 1)
+        train_acc = total_correct / max(total_seen, 1)
+
+        valid_loss = None
+        valid_acc = None
+        if valid_embeddings is not None and valid_labels is not None:
+            valid_loss, valid_acc, _ = predict_mlp(model, valid_embeddings, valid_labels, args)
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+        if valid_loss is None:
+            print(
+                f"Epoch {epoch}: train_loss={train_loss:.4f} ce={train_ce:.4f} "
+                f"supcon={train_supcon:.4f} train_acc={train_acc:.4f}"
+            )
+        else:
+            print(
+                f"Epoch {epoch}: train_loss={train_loss:.4f} ce={train_ce:.4f} "
+                f"supcon={train_supcon:.4f} train_acc={train_acc:.4f} "
+                f"valid_loss={valid_loss:.4f} valid_acc={valid_acc:.4f}"
+            )
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model
+
+
 @torch.no_grad()
 def embed_from_loader(
     loader: DataLoader,
@@ -801,6 +947,8 @@ def predict_mlp(
 
 def get_section_suffix(args: argparse.Namespace) -> str:
     section_bits = []
+    if getattr(args, "proj_supcon", False):
+        section_bits.append("proj_supcon")
     if args.lora_contrastive_finetune:
         section_bits.append("lora_supcon")
     for name, enabled in [
@@ -810,6 +958,7 @@ def get_section_suffix(args: argparse.Namespace) -> str:
         ("speaker", args.include_speaker_description),
         ("visual", args.include_visual_description),
         ("audio", args.include_audio_description),
+        ("llm_aud_vis", args.include_llm_aud_vis_desc),
         ("semantic", args.include_semantic_contrastive_cues),
         ("refs", args.include_reference_similar_emotions),
     ]:
@@ -822,7 +971,7 @@ def get_run_stem(args: argparse.Namespace) -> str:
     return f"qwen3_embedding_8b_{args.dataset}_mlp_{args.num_labels}cls_{get_section_suffix(args)}"
 
 
-def save_checkpoint(model: EmotionMLP, args: argparse.Namespace, labels: Sequence[str], embedding_model=None) -> Path:
+def save_checkpoint(model: nn.Module, args: argparse.Namespace, labels: Sequence[str], embedding_model=None) -> Path:
     save_dir = Path(args.output_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{get_run_stem(args)}.pt"
@@ -835,6 +984,7 @@ def save_checkpoint(model: EmotionMLP, args: argparse.Namespace, labels: Sequenc
     torch.save(
         {
             "model_state_dict": model.state_dict(),
+            "model_type": "proj_supcon" if args.proj_supcon else "mlp",
             "embedding_dim": args.embedding_dim,
             "num_labels": args.num_labels,
             "labels": list(labels),
@@ -1002,11 +1152,15 @@ def save_embedding_analysis(
     return output_path
 
 
-def load_checkpoint(path: Path, args: argparse.Namespace, labels: Sequence[str]) -> EmotionMLP:
+def load_checkpoint(path: Path, args: argparse.Namespace, labels: Sequence[str]) -> nn.Module:
     checkpoint = torch.load(path, map_location="cpu")
     embedding_dim = int(checkpoint.get("embedding_dim", args.embedding_dim))
     num_labels = int(checkpoint.get("num_labels", args.num_labels))
-    model = EmotionMLP(embedding_dim, num_labels, args.dropout)
+    model_type = checkpoint.get("model_type", "proj_supcon" if args.proj_supcon else "mlp")
+    if model_type == "proj_supcon":
+        model = ProjectionSupConClassifier(embedding_dim, num_labels)
+    else:
+        model = EmotionMLP(embedding_dim, num_labels, args.dropout)
     model.load_state_dict(checkpoint["model_state_dict"])
     device = torch.device("cuda" if torch.cuda.is_available() and not args.force_cpu_mlp else "cpu")
     model.to(device)
@@ -1091,6 +1245,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include_speaker_description", action="store_true")
     parser.add_argument("--include_visual_description", action="store_true")
     parser.add_argument("--include_audio_description", action="store_true")
+    parser.add_argument(
+        "--include_llm_aud_vis_desc",
+        dest="include_llm_aud_vis_desc",
+        action="store_true",
+        help="Include the LLM-generated audio and visual description block.",
+    )
     parser.add_argument("--include_semantic_contrastive_cues", action="store_true")
     parser.add_argument("--include_reference_similar_emotions", action="store_true")
 
@@ -1121,7 +1281,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--supcon_lambda", type=float, default=0.1)
     parser.add_argument("--supcon_temperature", type=float, default=0.07)
     parser.add_argument("--lora_lr", type=float, default=2e-5)
-    parser.add_argument("--lora_batch_size", type=int, default=8)
+    parser.add_argument("--lora_batch_size", type=int, default=14)
     parser.add_argument("--lora_grad_accum_steps", type=int, default=8)
     parser.add_argument("--lora_max_length", type=int, default=512)
     parser.add_argument("--lora_r", type=int, default=16)
@@ -1130,6 +1290,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora_target_modules", default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj")
     parser.add_argument("--gradient_checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    parser.add_argument(
+        "--proj_supcon",
+        action="store_true",
+        help="Train a frozen embedding model with a projection head plus supervised contrastive loss and MLP classifier.",
+    )
     args = parser.parse_args()
     if args.dataset == "iemocap":
         args.train_file = args.train_file.replace("meld", "iemocap")
@@ -1139,6 +1304,14 @@ def parse_args() -> argparse.Namespace:
         raise ValueError("--lora_batch_size must be at least 2.")
     if args.lora_grad_accum_steps < 1:
         raise ValueError("--lora_grad_accum_steps must be at least 1.")
+    if args.include_llm_aud_vis_desc and (args.include_visual_description or args.include_audio_description):
+        raise ValueError(
+            "--include_llm_aud_vis_desc cannot be combined with --include_visual_description or --include_audio_description."
+        )
+    if args.proj_supcon and args.lora_contrastive_finetune:
+        raise ValueError("--proj_supcon cannot be combined with --lora_contrastive_finetune.")
+    if args.proj_supcon:
+        args.l2_normalize = True
     return args
 
 
@@ -1179,10 +1352,26 @@ def main() -> None:
         valid_samples = load_samples(valid_path, args, labels) if valid_path and valid_path.exists() else []
         print(f"Loaded {len(train_samples)} train samples and {len(valid_samples)} valid samples.")
 
+        print_prompt_debug(train_samples, args.debug_samples, "train")
+        if valid_samples:
+            print_prompt_debug(valid_samples, args.debug_samples, "valid")
+
         train_y = labels_to_ids(train_samples, label_to_id)
         valid_y = labels_to_ids(valid_samples, label_to_id) if valid_samples else None
 
-        if args.lora_contrastive_finetune:
+        if args.proj_supcon:
+            train_embeddings = embed_texts([s.text for s in train_samples], tokenizer, embedding_model, args, "train")
+            analysis_payloads["train"] = (train_samples, train_embeddings, train_y)
+            print_embedding_debug(train_samples, train_embeddings, args.debug_samples, "train")
+
+            valid_embeddings = None
+            if valid_samples:
+                valid_embeddings = embed_texts([s.text for s in valid_samples], tokenizer, embedding_model, args, "valid")
+                analysis_payloads["valid"] = (valid_samples, valid_embeddings, valid_y)
+                print_embedding_debug(valid_samples, valid_embeddings, args.debug_samples, "valid")
+
+            classifier = train_proj_supcon(train_embeddings, train_y, valid_embeddings, valid_y, args)
+        elif args.lora_contrastive_finetune:
             classifier = train_lora_contrastive(
                 embedding_model,
                 tokenizer,
@@ -1218,7 +1407,8 @@ def main() -> None:
     if args.mode == "eval":
         if not args.checkpoint:
             raise ValueError("--checkpoint is required for --mode eval.")
-        embedding_model = load_lora_adapter_from_checkpoint(Path(args.checkpoint), embedding_model)
+        if not args.proj_supcon:
+            embedding_model = load_lora_adapter_from_checkpoint(Path(args.checkpoint), embedding_model)
         classifier = load_checkpoint(Path(args.checkpoint), args, labels)
 
     if args.mode in {"train_eval", "eval"}:
