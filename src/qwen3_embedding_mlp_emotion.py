@@ -102,6 +102,237 @@ class ProjectionSupConClassifier(nn.Module):
         return projected, self.classify(projected)
 
 
+def _alpha_to_logit(alpha: float) -> float:
+    alpha = min(max(float(alpha), 1e-6), 1.0 - 1e-6)
+    return float(np.log(alpha / (1.0 - alpha)))
+
+
+class PrototypeManager:
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self._clusterer_cls = None
+
+    def _get_clusterer_cls(self):
+        if self._clusterer_cls is not None:
+            return self._clusterer_cls
+        try:
+            import hdbscan  # type: ignore
+
+            self._clusterer_cls = hdbscan.HDBSCAN
+            return self._clusterer_cls
+        except Exception as first_exc:
+            try:
+                from sklearn.cluster import HDBSCAN as SklearnHDBSCAN  # type: ignore
+
+                self._clusterer_cls = SklearnHDBSCAN
+                return self._clusterer_cls
+            except Exception as second_exc:
+                raise ImportError(
+                    "Prototype learning requires an HDBSCAN implementation. "
+                    "Install the `hdbscan` package or a scikit-learn version that provides sklearn.cluster.HDBSCAN."
+                ) from second_exc if second_exc is not None else first_exc
+
+    def _distance_to_centroids(self, points: torch.Tensor, centroids: torch.Tensor) -> torch.Tensor:
+        metric = str(self.args.prototype_hdbscan_metric).lower()
+        if metric == "cosine":
+            point_norm = F.normalize(points, p=2, dim=1)
+            centroid_norm = F.normalize(centroids, p=2, dim=1)
+            return 1.0 - torch.matmul(point_norm, centroid_norm.T)
+        return torch.cdist(points, centroids, p=2)
+
+    def _fallback_class_prototype(self, class_embeddings: torch.Tensor, class_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        centroid = F.normalize(class_embeddings.mean(dim=0, keepdim=True), p=2, dim=1)
+        print(f"Prototype fallback: class {class_id} uses a single centroid prototype.")
+        return centroid.cpu(), torch.tensor([class_id], dtype=torch.long)
+
+    def recompute(
+        self,
+        embeddings: torch.Tensor,
+        labels: torch.Tensor,
+        num_labels: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        clusterer_cls = self._get_clusterer_cls()
+        embeddings = F.normalize(embeddings.detach().float().cpu(), p=2, dim=1)
+        labels = labels.detach().cpu().long()
+        prototype_vectors = []
+        prototype_labels = []
+
+        for class_id in range(num_labels):
+            class_mask = labels == class_id
+            class_size = int(class_mask.sum().item())
+            if class_size == 0:
+                continue
+            class_embeddings = embeddings[class_mask]
+            min_cluster_size = max(int(self.args.prototype_min_cluster_size), int(0.03 * class_size), 1)
+            if class_size < max(min_cluster_size, 2):
+                fallback_vectors, fallback_labels = self._fallback_class_prototype(class_embeddings, class_id)
+                prototype_vectors.append(fallback_vectors)
+                prototype_labels.append(fallback_labels)
+                continue
+
+            clusterer = clusterer_cls(
+                min_cluster_size=min_cluster_size,
+                metric=self.args.prototype_hdbscan_metric,
+            )
+            cluster_assignments = np.asarray(clusterer.fit_predict(class_embeddings.numpy()), dtype=np.int64)
+            valid_clusters = sorted(int(cluster_id) for cluster_id in np.unique(cluster_assignments) if cluster_id != -1)
+            if not valid_clusters:
+                print(f"Prototype warning: HDBSCAN found no valid clusters for class {class_id}. Falling back to one centroid.")
+                fallback_vectors, fallback_labels = self._fallback_class_prototype(class_embeddings, class_id)
+                prototype_vectors.append(fallback_vectors)
+                prototype_labels.append(fallback_labels)
+                continue
+
+            centroid_ids = []
+            centroid_vectors = []
+            for cluster_id in valid_clusters:
+                cluster_points = class_embeddings[cluster_assignments == cluster_id]
+                centroid_ids.append(cluster_id)
+                centroid_vectors.append(cluster_points.mean(dim=0))
+            centroid_tensor = torch.stack(centroid_vectors, dim=0)
+
+            outlier_mask = cluster_assignments == -1
+            if outlier_mask.any():
+                outliers = class_embeddings[outlier_mask]
+                distances = self._distance_to_centroids(outliers, centroid_tensor)
+                nearest_centroids = distances.argmin(dim=1).tolist()
+                for outlier_idx, centroid_pos in zip(np.where(outlier_mask)[0].tolist(), nearest_centroids):
+                    cluster_assignments[outlier_idx] = centroid_ids[int(centroid_pos)]
+
+            final_cluster_ids = sorted(int(cluster_id) for cluster_id in np.unique(cluster_assignments))
+            class_prototypes = []
+            for cluster_id in final_cluster_ids:
+                cluster_points = class_embeddings[cluster_assignments == cluster_id]
+                centroid = F.normalize(cluster_points.mean(dim=0, keepdim=True), p=2, dim=1).squeeze(0)
+                class_prototypes.append(centroid)
+
+            prototype_vectors.append(torch.stack(class_prototypes, dim=0).cpu())
+            prototype_labels.append(torch.full((len(class_prototypes),), class_id, dtype=torch.long))
+            print(
+                f"Prototype update: class {class_id} size={class_size} min_cluster_size={min_cluster_size} "
+                f"clusters={len(class_prototypes)}"
+            )
+
+        if not prototype_vectors:
+            return torch.empty((0, embeddings.size(1)), dtype=torch.float32), torch.empty((0,), dtype=torch.long)
+        return torch.cat(prototype_vectors, dim=0), torch.cat(prototype_labels, dim=0)
+
+
+class SamplePrototypeSupConLoss(nn.Module):
+    def __init__(self, temperature: float):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(
+        self,
+        embeddings: torch.Tensor,
+        labels: torch.Tensor,
+        prototype_vectors: torch.Tensor,
+        prototype_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        if embeddings.size(0) == 0 or prototype_vectors.numel() == 0:
+            return embeddings.new_tensor(0.0)
+
+        norm_embeddings = F.normalize(embeddings, p=2, dim=1)
+        norm_prototypes = F.normalize(prototype_vectors, p=2, dim=1)
+        similarity = torch.matmul(norm_embeddings, norm_prototypes.T) / self.temperature
+        losses = []
+        for idx in range(norm_embeddings.size(0)):
+            same_class_mask = prototype_labels == labels[idx]
+            negative_mask = prototype_labels != labels[idx]
+            if not same_class_mask.any() or not negative_mask.any():
+                continue
+            positive_logit = similarity[idx, same_class_mask].max()
+            logits = torch.cat([positive_logit.unsqueeze(0), similarity[idx, negative_mask]], dim=0)
+            losses.append(-(positive_logit - torch.logsumexp(logits, dim=0)))
+        if not losses:
+            return embeddings.new_tensor(0.0)
+        return torch.stack(losses).mean()
+
+
+class PrototypeClassifier(nn.Module):
+    def __init__(self, num_labels: int, temperature: float):
+        super().__init__()
+        self.num_labels = num_labels
+        self.temperature = temperature
+        self.register_buffer("prototype_vectors", torch.empty(0, 0))
+        self.register_buffer("prototype_labels", torch.empty(0, dtype=torch.long))
+
+    def set_prototypes(self, prototype_vectors: torch.Tensor, prototype_labels: torch.Tensor) -> None:
+        if prototype_vectors.numel() == 0:
+            feature_dim = self.prototype_vectors.size(1) if self.prototype_vectors.ndim == 2 else 0
+            self.prototype_vectors = torch.empty((0, feature_dim), device=self.prototype_vectors.device)
+            self.prototype_labels = torch.empty((0,), dtype=torch.long, device=self.prototype_labels.device)
+            return
+        normalized = F.normalize(prototype_vectors.detach().float(), p=2, dim=1)
+        self.prototype_vectors = normalized.to(self.prototype_vectors.device)
+        self.prototype_labels = prototype_labels.detach().long().to(self.prototype_labels.device)
+
+    def has_prototypes(self) -> bool:
+        return self.prototype_vectors.numel() > 0 and self.prototype_labels.numel() > 0
+
+    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
+        if not self.has_prototypes():
+            return embeddings.new_zeros((embeddings.size(0), self.num_labels))
+        norm_embeddings = F.normalize(embeddings, p=2, dim=1)
+        norm_prototypes = F.normalize(self.prototype_vectors, p=2, dim=1)
+        similarity = torch.matmul(norm_embeddings, norm_prototypes.T) / self.temperature
+        class_scores = embeddings.new_full((embeddings.size(0), self.num_labels), -1e4)
+        for class_id in range(self.num_labels):
+            class_mask = self.prototype_labels == class_id
+            if class_mask.any():
+                class_scores[:, class_id] = torch.logsumexp(similarity[:, class_mask], dim=1)
+        return class_scores
+
+
+class FusionClassifier(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        num_labels: int,
+        dropout: float,
+        prototype_temperature: float,
+        fixed_alpha: Optional[float] = None,
+    ):
+        super().__init__()
+        self.mlp = EmotionMLP(input_dim, num_labels, dropout)
+        self.prototype_classifier = PrototypeClassifier(num_labels, prototype_temperature)
+        alpha_init = 0.0 if fixed_alpha is None else _alpha_to_logit(fixed_alpha)
+        self.alpha_param = nn.Parameter(torch.tensor(alpha_init, dtype=torch.float32), requires_grad=fixed_alpha is None)
+
+    def set_prototypes(self, prototype_vectors: torch.Tensor, prototype_labels: torch.Tensor) -> None:
+        self.prototype_classifier.set_prototypes(prototype_vectors, prototype_labels)
+
+    def has_prototypes(self) -> bool:
+        return self.prototype_classifier.has_prototypes()
+
+    def alpha(self) -> torch.Tensor:
+        return torch.sigmoid(self.alpha_param)
+
+    def forward_components(self, embeddings: torch.Tensor) -> Dict[str, torch.Tensor]:
+        mlp_logits = self.mlp(embeddings)
+        mlp_probs = F.softmax(mlp_logits, dim=-1)
+        if not self.has_prototypes():
+            final_probs = mlp_probs
+            proto_class_scores = embeddings.new_zeros(mlp_logits.shape)
+            proto_probs = mlp_probs.new_zeros(mlp_probs.shape)
+        else:
+            proto_class_scores = self.prototype_classifier(embeddings)
+            proto_probs = F.softmax(proto_class_scores, dim=-1)
+            alpha = self.alpha().to(embeddings.device)
+            final_probs = alpha * mlp_probs + (1.0 - alpha) * proto_probs
+        final_log_probs = torch.log(final_probs.clamp_min(1e-12))
+        return {
+            "mlp_logits": mlp_logits,
+            "proto_class_scores": proto_class_scores,
+            "proto_probs": proto_probs,
+            "final_probs": final_probs,
+            "final_log_probs": final_log_probs,
+        }
+
+    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
+        return self.forward_components(embeddings)["final_log_probs"]
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -642,6 +873,27 @@ def supervised_contrastive_loss(
     return -mean_log_prob_pos[valid_anchor_mask].mean()
 
 
+def _train_step_prediction(model: nn.Module, embeddings: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    if isinstance(model, FusionClassifier):
+        outputs = model.forward_components(embeddings)
+        loss = F.nll_loss(outputs["final_log_probs"], labels)
+        predictions = outputs["final_log_probs"].argmax(dim=-1)
+        return loss, predictions
+    logits = model(embeddings)
+    loss = F.cross_entropy(logits, labels)
+    predictions = logits.argmax(dim=-1)
+    return loss, predictions
+
+
+def load_classifier_state(model: nn.Module, state_dict: Dict[str, torch.Tensor]) -> None:
+    if isinstance(model, FusionClassifier):
+        prototype_vectors = state_dict.get("prototype_classifier.prototype_vectors")
+        prototype_labels = state_dict.get("prototype_classifier.prototype_labels")
+        if prototype_vectors is not None and prototype_labels is not None:
+            model.set_prototypes(prototype_vectors, prototype_labels)
+    model.load_state_dict(state_dict, strict=False)
+
+
 def train_mlp(
     train_embeddings: torch.Tensor,
     train_labels: torch.Tensor,
@@ -708,9 +960,24 @@ def train_lora_contrastive(
     valid_samples: Sequence[EmotionSample],
     valid_labels: Optional[torch.Tensor],
     args: argparse.Namespace,
-) -> EmotionMLP:
+) -> nn.Module:
     device = embedding_model.device
-    mlp = EmotionMLP(args.embedding_dim, args.num_labels, args.dropout).to(device)
+    classifier: nn.Module
+    prototype_manager = None
+    prototype_supcon_loss = None
+    prototype_refresh_loader = None
+    if args.prototype_learning:
+        classifier = FusionClassifier(
+            args.embedding_dim,
+            args.num_labels,
+            args.dropout,
+            args.prototype_temperature,
+            args.prototype_fixed_alpha,
+        ).to(device)
+        prototype_manager = PrototypeManager(args)
+        prototype_supcon_loss = SamplePrototypeSupConLoss(args.prototype_temperature).to(device)
+    else:
+        classifier = EmotionMLP(args.embedding_dim, args.num_labels, args.dropout).to(device)
     train_dataset = TextEmotionDataset(train_samples, train_labels)
     class_counts = torch.bincount(train_labels, minlength=args.num_labels)
     print(f"LoRA SupCon class counts: {class_counts.tolist()}")
@@ -724,6 +991,13 @@ def train_lora_contrastive(
         batch_sampler=BalancedPairBatchSampler(train_labels, args.lora_batch_size),
         collate_fn=make_text_collator(tokenizer, args),
     )
+    if args.prototype_learning:
+        prototype_refresh_loader = DataLoader(
+            train_dataset,
+            batch_size=args.embed_batch_size,
+            shuffle=False,
+            collate_fn=make_text_collator(tokenizer, args),
+        )
 
     valid_loader = None
     if valid_samples and valid_labels is not None:
@@ -739,8 +1013,9 @@ def train_lora_contrastive(
         raise ValueError(
             "No trainable LoRA parameters were found. Check --lora_target_modules for this embedding model."
         )
+    classifier_params = [param for param in classifier.parameters() if param.requires_grad]
     optimizer = torch.optim.AdamW(
-        [{"params": trainable_params, "lr": args.lora_lr}, {"params": mlp.parameters(), "lr": args.lr}],
+        [{"params": trainable_params, "lr": args.lora_lr}, {"params": classifier_params, "lr": args.lr}],
         weight_decay=args.weight_decay,
     )
 
@@ -748,9 +1023,34 @@ def train_lora_contrastive(
     best_valid_loss = float("inf")
     for epoch in range(1, args.epochs + 1):
         embedding_model.train()
-        mlp.train()
+        classifier.train()
+        if args.prototype_learning and prototype_manager is not None and prototype_refresh_loader is not None:
+            should_recompute = epoch > args.prototype_warmup_epochs and (
+                epoch == args.prototype_warmup_epochs + 1
+                or args.prototype_recompute_every_epoch
+                or not classifier.has_prototypes()
+            )
+            if should_recompute:
+                train_embeddings_epoch, train_labels_epoch = embed_from_loader(
+                    prototype_refresh_loader,
+                    tokenizer,
+                    embedding_model,
+                    args,
+                    f"train-prototypes-epoch{epoch}",
+                )
+                prototype_vectors, prototype_labels = prototype_manager.recompute(
+                    train_embeddings_epoch,
+                    train_labels_epoch,
+                    args.num_labels,
+                )
+                classifier.set_prototypes(
+                    prototype_vectors.to(device=device, dtype=torch.float32),
+                    prototype_labels.to(device=device, dtype=torch.long),
+                )
+                print(f"Prototype update: epoch={epoch} total_prototypes={int(prototype_labels.numel())}")
         total_ce = 0.0
         total_supcon = 0.0
+        total_proto_supcon = 0.0
         total_loss = 0.0
         total_correct = 0
         total_seen = 0
@@ -760,58 +1060,68 @@ def train_lora_contrastive(
             batch = {key: value.to(device) for key, value in batch.items()}
             y = batch.pop("labels")
             embeddings = encode_batch(batch, embedding_model, args)
-            logits = mlp(embeddings)
-            ce_loss = F.cross_entropy(logits, y)
+            ce_loss, predictions = _train_step_prediction(classifier, embeddings, y)
             supcon_loss = supervised_contrastive_loss(embeddings, y, args.supcon_temperature)
-            loss = ce_loss + args.supcon_lambda * supcon_loss
+            if args.prototype_learning and prototype_supcon_loss is not None and isinstance(classifier, FusionClassifier):
+                proto_supcon_value = prototype_supcon_loss(
+                    embeddings,
+                    y,
+                    classifier.prototype_classifier.prototype_vectors,
+                    classifier.prototype_classifier.prototype_labels,
+                )
+            else:
+                proto_supcon_value = embeddings.new_tensor(0.0)
+            loss = ce_loss + args.supcon_lambda * supcon_loss + args.prototype_supcon_lambda * proto_supcon_value
             (loss / args.lora_grad_accum_steps).backward()
 
             is_update_step = (total_seen // y.size(0) + 1) % args.lora_grad_accum_steps == 0
             is_last_step = (total_seen + y.size(0)) >= len(train_loader) * args.lora_batch_size
             if is_update_step or is_last_step:
-                torch.nn.utils.clip_grad_norm_(trainable_params + list(mlp.parameters()), args.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(trainable_params + classifier_params, args.max_grad_norm)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
             total_ce += ce_loss.item() * y.size(0)
             total_supcon += supcon_loss.item() * y.size(0)
+            total_proto_supcon += proto_supcon_value.item() * y.size(0)
             total_loss += loss.item() * y.size(0)
-            total_correct += (logits.argmax(dim=-1) == y).sum().item()
+            total_correct += (predictions == y).sum().item()
             total_seen += y.size(0)
 
         train_loss = total_loss / max(total_seen, 1)
         train_ce = total_ce / max(total_seen, 1)
         train_supcon = total_supcon / max(total_seen, 1)
+        train_proto_supcon = total_proto_supcon / max(total_seen, 1)
         train_acc = total_correct / max(total_seen, 1)
 
         valid_loss = None
         valid_acc = None
         if valid_loader is not None:
             valid_embeddings, valid_y = embed_from_loader(valid_loader, tokenizer, embedding_model, args, "valid-lora")
-            valid_loss, valid_acc, _ = predict_mlp(mlp, valid_embeddings, valid_y, args)
+            valid_loss, valid_acc, _ = predict_mlp(classifier, valid_embeddings, valid_y, args)
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
                 best_state = {
-                    "mlp": {k: v.detach().cpu().clone() for k, v in mlp.state_dict().items()},
+                    "classifier": {k: v.detach().cpu().clone() for k, v in classifier.state_dict().items()},
                     "lora": {k: v.detach().cpu().clone() for k, v in embedding_model.state_dict().items() if "lora_" in k},
                 }
 
         if valid_loss is None:
             print(
                 f"Epoch {epoch}: train_loss={train_loss:.4f} ce={train_ce:.4f} "
-                f"supcon={train_supcon:.4f} train_acc={train_acc:.4f}"
+                f"supcon={train_supcon:.4f} proto_supcon={train_proto_supcon:.4f} train_acc={train_acc:.4f}"
             )
         else:
             print(
                 f"Epoch {epoch}: train_loss={train_loss:.4f} ce={train_ce:.4f} "
-                f"supcon={train_supcon:.4f} train_acc={train_acc:.4f} "
+                f"supcon={train_supcon:.4f} proto_supcon={train_proto_supcon:.4f} train_acc={train_acc:.4f} "
                 f"valid_loss={valid_loss:.4f} valid_acc={valid_acc:.4f}"
             )
 
     if best_state is not None:
-        mlp.load_state_dict(best_state["mlp"])
+        load_classifier_state(classifier, best_state["classifier"])
         embedding_model.load_state_dict(best_state["lora"], strict=False)
-    return mlp
+    return classifier
 
 
 def train_proj_supcon(
@@ -913,7 +1223,7 @@ def embed_from_loader(
 
 @torch.no_grad()
 def predict_mlp(
-    model: EmotionMLP,
+    model: nn.Module,
     embeddings: torch.Tensor,
     labels: Optional[torch.Tensor],
     args: argparse.Namespace,
@@ -932,11 +1242,18 @@ def predict_mlp(
     for x, y in loader:
         x = x.to(device)
         y = y.to(device)
-        logits = model(x)
-        pred = logits.argmax(dim=-1)
+        if isinstance(model, FusionClassifier):
+            log_probs = model(x)
+            pred = log_probs.argmax(dim=-1)
+        else:
+            logits = model(x)
+            pred = logits.argmax(dim=-1)
         preds.extend(pred.detach().cpu().tolist())
         if labels is not None:
-            loss = F.cross_entropy(logits, y)
+            if isinstance(model, FusionClassifier):
+                loss = F.nll_loss(log_probs, y)
+            else:
+                loss = F.cross_entropy(logits, y)
             losses.append(loss.item() * y.size(0))
             correct += (pred == y).sum().item()
             seen += y.size(0)
@@ -951,6 +1268,8 @@ def get_section_suffix(args: argparse.Namespace) -> str:
         section_bits.append("proj_supcon")
     if args.lora_contrastive_finetune:
         section_bits.append("lora_supcon")
+    if getattr(args, "prototype_learning", False):
+        section_bits.append("prototype")
     for name, enabled in [
         ("context", args.include_conversation_context or args.include_target_speaker),
         ("explicit", args.include_explicit_emotion),
@@ -981,15 +1300,29 @@ def save_checkpoint(model: nn.Module, args: argparse.Namespace, labels: Sequence
         lora_adapter_path = save_dir / f"{get_run_stem(args)}_lora_adapter"
         embedding_model.save_pretrained(lora_adapter_path)
         print(f"Saved LoRA adapter to {lora_adapter_path}")
+    model_type = "mlp"
+    prototype_vectors = None
+    prototype_labels = None
+    alpha_param = None
+    if isinstance(model, ProjectionSupConClassifier):
+        model_type = "proj_supcon"
+    elif isinstance(model, FusionClassifier):
+        model_type = "prototype_fusion"
+        prototype_vectors = model.prototype_classifier.prototype_vectors.detach().cpu()
+        prototype_labels = model.prototype_classifier.prototype_labels.detach().cpu()
+        alpha_param = model.alpha_param.detach().cpu()
     torch.save(
         {
             "model_state_dict": model.state_dict(),
-            "model_type": "proj_supcon" if args.proj_supcon else "mlp",
+            "model_type": model_type,
             "embedding_dim": args.embedding_dim,
             "num_labels": args.num_labels,
             "labels": list(labels),
             "args": vars(args),
             "lora_adapter_path": str(lora_adapter_path) if lora_adapter_path is not None else None,
+            "prototype_vectors": prototype_vectors,
+            "prototype_labels": prototype_labels,
+            "alpha_param": alpha_param,
         },
         path,
     )
@@ -1159,9 +1492,26 @@ def load_checkpoint(path: Path, args: argparse.Namespace, labels: Sequence[str])
     model_type = checkpoint.get("model_type", "proj_supcon" if args.proj_supcon else "mlp")
     if model_type == "proj_supcon":
         model = ProjectionSupConClassifier(embedding_dim, num_labels)
+    elif model_type == "prototype_fusion":
+        fixed_alpha = checkpoint.get("args", {}).get("prototype_fixed_alpha")
+        model = FusionClassifier(
+            embedding_dim,
+            num_labels,
+            args.dropout,
+            checkpoint.get("args", {}).get("prototype_temperature", args.prototype_temperature),
+            fixed_alpha,
+        )
     else:
         model = EmotionMLP(embedding_dim, num_labels, args.dropout)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    load_classifier_state(model, checkpoint["model_state_dict"])
+    if isinstance(model, FusionClassifier):
+        prototype_vectors = checkpoint.get("prototype_vectors")
+        prototype_labels = checkpoint.get("prototype_labels")
+        if prototype_vectors is not None and prototype_labels is not None:
+            model.set_prototypes(prototype_vectors, prototype_labels)
+        alpha_param = checkpoint.get("alpha_param")
+        if alpha_param is not None:
+            model.alpha_param.data.copy_(alpha_param)
     device = torch.device("cuda" if torch.cuda.is_available() and not args.force_cpu_mlp else "cpu")
     model.to(device)
     checkpoint_labels = checkpoint.get("labels")
@@ -1186,7 +1536,7 @@ def load_lora_adapter_from_checkpoint(path: Path, embedding_model):
 
 
 def evaluate_split(
-    model: EmotionMLP,
+    model: nn.Module,
     samples: Sequence[EmotionSample],
     embeddings: torch.Tensor,
     y_true: torch.Tensor,
@@ -1280,6 +1630,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--supcon_lambda", type=float, default=0.1)
     parser.add_argument("--supcon_temperature", type=float, default=0.07)
+    parser.add_argument("--prototype_learning", action="store_true")
+    parser.add_argument("--prototype_supcon_lambda", type=float, default=0.1)
+    parser.add_argument("--prototype_temperature", type=float, default=0.07)
+    parser.add_argument("--prototype_min_cluster_size", type=int, default=5)
+    parser.add_argument("--prototype_fixed_alpha", type=float, default=None)
+    parser.add_argument("--prototype_warmup_epochs", type=int, default=3)
+    parser.add_argument("--prototype_recompute_every_epoch", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--prototype_hdbscan_metric", default="euclidean")
     parser.add_argument("--lora_lr", type=float, default=2e-5)
     parser.add_argument("--lora_batch_size", type=int, default=14)
     parser.add_argument("--lora_grad_accum_steps", type=int, default=8)
@@ -1310,6 +1668,14 @@ def parse_args() -> argparse.Namespace:
         )
     if args.proj_supcon and args.lora_contrastive_finetune:
         raise ValueError("--proj_supcon cannot be combined with --lora_contrastive_finetune.")
+    if args.prototype_learning and args.proj_supcon:
+        raise ValueError("--prototype_learning is supported only with the LoRA contrastive fine-tuning pipeline.")
+    if args.prototype_learning and not args.lora_contrastive_finetune:
+        raise ValueError("--prototype_learning requires --lora_contrastive_finetune.")
+    if args.prototype_fixed_alpha is not None and not (0.0 <= args.prototype_fixed_alpha <= 1.0):
+        raise ValueError("--prototype_fixed_alpha must be between 0 and 1.")
+    if args.prototype_warmup_epochs < 0:
+        raise ValueError("--prototype_warmup_epochs must be non-negative.")
     if args.proj_supcon:
         args.l2_normalize = True
     return args
