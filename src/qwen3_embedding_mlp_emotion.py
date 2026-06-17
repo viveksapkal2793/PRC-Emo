@@ -112,6 +112,36 @@ class PrototypeManager:
         self.args = args
         self._clusterer_cls = None
 
+    def _reduce_for_prototype_clustering(self, embeddings: torch.Tensor) -> torch.Tensor:
+        if embeddings.ndim != 2 or embeddings.size(0) < 2 or embeddings.size(1) < 2:
+            return embeddings.detach().float().cpu()
+
+        n_samples, n_features = embeddings.shape
+        n_components = min(50, n_features, n_samples - 1)
+        if n_components < 1 or n_components >= n_features:
+            return embeddings.detach().float().cpu()
+
+        try:
+            from sklearn.decomposition import IncrementalPCA, PCA
+        except Exception as exc:
+            raise ImportError(
+                "Prototype learning requires scikit-learn PCA support for prototype clustering."
+            ) from exc
+
+        embeddings_np = embeddings.detach().float().cpu().numpy()
+        if n_samples > 512:
+            batch_size = min(n_samples, max(n_components, 256))
+            reducer = IncrementalPCA(n_components=n_components, batch_size=batch_size)
+            for start in range(0, n_samples, batch_size):
+                reducer.partial_fit(embeddings_np[start : start + batch_size])
+            reduced_chunks = []
+            for start in range(0, n_samples, batch_size):
+                reduced_chunks.append(reducer.transform(embeddings_np[start : start + batch_size]))
+            reduced_np = np.concatenate(reduced_chunks, axis=0)
+        else:
+            reduced_np = PCA(n_components=n_components).fit_transform(embeddings_np)
+        return torch.from_numpy(reduced_np).float()
+
     def _get_clusterer_cls(self):
         if self._clusterer_cls is not None:
             return self._clusterer_cls
@@ -154,6 +184,7 @@ class PrototypeManager:
         clusterer_cls = self._get_clusterer_cls()
         embeddings = F.normalize(embeddings.detach().float().cpu(), p=2, dim=1)
         labels = labels.detach().cpu().long()
+        reduced_embeddings = self._reduce_for_prototype_clustering(embeddings)
         prototype_vectors = []
         prototype_labels = []
 
@@ -173,8 +204,10 @@ class PrototypeManager:
             clusterer = clusterer_cls(
                 min_cluster_size=min_cluster_size,
                 metric=self.args.prototype_hdbscan_metric,
+                cluster_selection_method="leaf",
             )
-            cluster_assignments = np.asarray(clusterer.fit_predict(class_embeddings.numpy()), dtype=np.int64)
+            class_reduced_embeddings = reduced_embeddings[class_mask]
+            cluster_assignments = np.asarray(clusterer.fit_predict(class_reduced_embeddings.numpy()), dtype=np.int64)
             valid_clusters = sorted(int(cluster_id) for cluster_id in np.unique(cluster_assignments) if cluster_id != -1)
             if not valid_clusters:
                 print(f"Prototype warning: HDBSCAN found no valid clusters for class {class_id}. Falling back to one centroid.")
@@ -889,8 +922,23 @@ def load_classifier_state(model: nn.Module, state_dict: Dict[str, torch.Tensor])
     if isinstance(model, FusionClassifier):
         prototype_vectors = state_dict.get("prototype_classifier.prototype_vectors")
         prototype_labels = state_dict.get("prototype_classifier.prototype_labels")
+        filtered_state = {
+            key: value
+            for key, value in state_dict.items()
+            if key not in {"prototype_classifier.prototype_vectors", "prototype_classifier.prototype_labels"}
+        }
         if prototype_vectors is not None and prototype_labels is not None:
-            model.set_prototypes(prototype_vectors, prototype_labels)
+            if prototype_vectors.numel() == 0:
+                model.prototype_classifier.prototype_vectors = torch.empty(
+                    (0, 0), device=model.prototype_classifier.prototype_vectors.device
+                )
+                model.prototype_classifier.prototype_labels = torch.empty(
+                    (0,), dtype=torch.long, device=model.prototype_classifier.prototype_labels.device
+                )
+            else:
+                model.set_prototypes(prototype_vectors, prototype_labels)
+        model.load_state_dict(filtered_state, strict=False)
+        return
     model.load_state_dict(state_dict, strict=False)
 
 
@@ -1635,7 +1683,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prototype_temperature", type=float, default=0.07)
     parser.add_argument("--prototype_min_cluster_size", type=int, default=5)
     parser.add_argument("--prototype_fixed_alpha", type=float, default=None)
-    parser.add_argument("--prototype_warmup_epochs", type=int, default=3)
+    parser.add_argument("--prototype_warmup_epochs", type=int, default=1)
     parser.add_argument("--prototype_recompute_every_epoch", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--prototype_hdbscan_metric", default="euclidean")
     parser.add_argument("--lora_lr", type=float, default=2e-5)
