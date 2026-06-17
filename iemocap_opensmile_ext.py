@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 
 TARGET_EMOTIONS = {"neu", "fru", "ang", "exc", "sad", "hap"}
+IEMOCAP_LABELS = ["happy", "sad", "neutral", "angry", "excited", "frustrated"]
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,13 @@ class UtteranceRecord:
     utterance_id: int
     turn_name: str
     emotion: str
+    wav_path: Path
+
+
+@dataclass(frozen=True)
+class TranscriptTurn:
+    turn_name: str
+    text: str
     wav_path: Path
 
 
@@ -113,12 +121,42 @@ def load_valid_dialogue_ids(valid_json_path: str) -> Set[str]:
     raise ValueError(f"Unsupported validation JSON format in {valid_json_path}")
 
 
+def load_split_json(split_json_path: Path) -> dict:
+    with split_json_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected a dialogue-id keyed JSON object in {split_json_path}")
+    return data
+
+
 def locate_emoeval_file(iemocap_root: Path, session_num: int, dialogue_id: str) -> Path:
     session_dir = iemocap_root / f"Session{session_num}" / "dialog" / "EmoEvaluation"
     candidate = session_dir / f"{dialogue_id}.txt"
     if candidate.exists():
         return candidate
     raise FileNotFoundError(f"EmoEvaluation file not found for {dialogue_id}: {candidate}")
+
+
+def locate_transcript_file(iemocap_root: Path, session_num: int, dialogue_id: str) -> Path:
+    session_dir = iemocap_root / f"Session{session_num}" / "dialog" / "transcriptions"
+    candidate = session_dir / f"{dialogue_id}.txt"
+    if candidate.exists():
+        return candidate
+    raise FileNotFoundError(f"Transcript file not found for {dialogue_id}: {candidate}")
+
+
+def load_dialogue_wav_inventory(iemocap_root: Path, session_num: int, dialogue_id: str) -> dict:
+    wav_dir = iemocap_root / f"Session{session_num}" / "sentences" / "wav" / dialogue_id
+    if not wav_dir.exists():
+        raise FileNotFoundError(f"Wav directory not found: {wav_dir}")
+
+    inventory = {
+        "M": sorted(wav_dir.glob(f"{dialogue_id}_M*.wav")),
+        "F": sorted(wav_dir.glob(f"{dialogue_id}_F*.wav")),
+    }
+    if not inventory["M"] and not inventory["F"]:
+        raise FileNotFoundError(f"No wav files found in: {wav_dir}")
+    return inventory
 
 
 def resolve_utterance_wav(iemocap_root: Path, session_num: int, dialogue_id: str, turn_name: str) -> Path:
@@ -129,49 +167,87 @@ def resolve_utterance_wav(iemocap_root: Path, session_num: int, dialogue_id: str
     raise FileNotFoundError(f"Wav file not found: {wav_path}")
 
 
-def parse_emoeval_file(
-    iemocap_root: Path,
-    session_num: int,
-    dialogue_id: str,
-    split: str,
-) -> List[UtteranceRecord]:
-    emoeval_path = locate_emoeval_file(iemocap_root, session_num, dialogue_id)
-    records: List[UtteranceRecord] = []
-    utterance_index = 0
+def parse_transcript_file(iemocap_root: Path, session_num: int, dialogue_id: str) -> List[TranscriptTurn]:
+    transcript_path = locate_transcript_file(iemocap_root, session_num, dialogue_id)
+    turns: List[TranscriptTurn] = []
+    transcript_re = re.compile(r"^(?P<turn>\S+)\s+\[[0-9.]+-[0-9.]+\]:\s*(?P<text>.*)$")
 
-    with open(emoeval_path, "r", encoding="utf-8") as f:
+    with open(transcript_path, "r", encoding="utf-8") as f:
         for line in f:
-            line = line.strip()
-            if not line.startswith("["):
-                continue
-
-            match = re.match(
-                r"^\[(?P<start>[0-9.]+) - (?P<end>[0-9.]+)\]\s+(?P<turn>\S+)\s+(?P<emotion>\S+)\s+\[(?P<vad>.+)\]$",
-                line,
-            )
+            line = line.rstrip("\n")
+            match = transcript_re.match(line)
             if match is None:
                 continue
 
             turn_name = match.group("turn")
-            emotion = match.group("emotion").lower()
-            if emotion not in TARGET_EMOTIONS:
+            if "XX" in turn_name:
                 continue
 
+            text = match.group("text").strip()
+
             wav_path = resolve_utterance_wav(iemocap_root, session_num, dialogue_id, turn_name)
-            records.append(
-                UtteranceRecord(
-                    split=split,
-                    session=f"Session{session_num}",
-                    dialogue_id=dialogue_id,
-                    utterance_id=utterance_index,
+
+            turns.append(
+                TranscriptTurn(
                     turn_name=turn_name,
-                    emotion=emotion,
+                    text=text,
                     wav_path=wav_path,
                 )
             )
-            utterance_index += 1
 
-    return records
+    if not turns:
+        raise ValueError(f"No transcript turns parsed from {transcript_path}")
+
+    return turns
+
+
+def normalize_text(text: str) -> str:
+    text = text.replace("\n", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.replace("``", '"').replace("''", '"')
+    return text
+
+
+def align_json_to_transcript(json_sentences: List[str], transcript_turns: List[TranscriptTurn]) -> List[TranscriptTurn]:
+    aligned: List[TranscriptTurn] = []
+    transcript_index = 0
+    logger = logging.getLogger("iemocap_opensmile_extractor")
+
+    for idx, json_sentence in enumerate(json_sentences):
+        json_norm = normalize_text(json_sentence)
+        matched_turn: Optional[TranscriptTurn] = None
+
+        while transcript_index < len(transcript_turns):
+            candidate_turn = transcript_turns[transcript_index]
+            transcript_norm = normalize_text(candidate_turn.text)
+            transcript_index += 1
+
+            if json_norm == transcript_norm:
+                matched_turn = candidate_turn
+                break
+
+        if matched_turn is None:
+            raise ValueError(
+                f"Could not align JSON sentence at position {idx}: {json_sentence!r}"
+            )
+
+        aligned.append(matched_turn)
+
+    if transcript_index < len(transcript_turns):
+        skipped_turns = [turn.turn_name for turn in transcript_turns[transcript_index:]]
+        logger.warning(
+            "Skipped %s trailing transcript turns after JSON alignment, example turns: %s",
+            len(skipped_turns),
+            skipped_turns[:5],
+        )
+
+    return aligned
+
+
+def label_id_to_name(label_id: int) -> str:
+    if 0 <= label_id < len(IEMOCAP_LABELS):
+        return IEMOCAP_LABELS[label_id]
+    return "unknown"
 
 
 def collect_dialogue_ids_for_session(session_dir: Path) -> List[str]:
@@ -182,27 +258,42 @@ def collect_dialogue_ids_for_session(session_dir: Path) -> List[str]:
 def build_split_records(
     iemocap_root: Path,
     split: str,
-    session_nums: Iterable[int],
+    split_json_path: Path,
     valid_dialogue_ids: Set[str],
 ) -> List[UtteranceRecord]:
     records: List[UtteranceRecord] = []
+    split_data = load_split_json(split_json_path)
 
-    for session_num in session_nums:
-        session_dir = iemocap_root / f"Session{session_num}"
-        dialogue_ids = collect_dialogue_ids_for_session(session_dir)
+    for dialogue_id, dialogue_data in split_data.items():
+        if split == "valid" and dialogue_id not in valid_dialogue_ids:
+            continue
+        if split == "train" and dialogue_id in valid_dialogue_ids:
+            continue
 
-        for dialogue_id in dialogue_ids:
-            if split == "valid" and dialogue_id not in valid_dialogue_ids:
-                continue
-            if split == "train" and dialogue_id in valid_dialogue_ids:
-                continue
+        session_num = int(dialogue_id[3:5])
+        transcript_turns = parse_transcript_file(iemocap_root, session_num, dialogue_id)
+        json_sentences = dialogue_data.get("sentences", [])
+        json_genders = dialogue_data.get("genders", [])
+        json_labels = dialogue_data.get("labels", [])
 
-            records.extend(
-                parse_emoeval_file(
-                    iemocap_root=iemocap_root,
-                    session_num=session_num,
-                    dialogue_id=dialogue_id,
+        if not (len(json_sentences) == len(json_genders) == len(json_labels)):
+            raise ValueError(f"Mismatched JSON lengths in {split_json_path} for {dialogue_id}")
+
+        aligned_turns = align_json_to_transcript(json_sentences, transcript_turns)
+
+        for utterance_index, (sentence, gender, label, transcript_turn) in enumerate(
+            zip(json_sentences, json_genders, json_labels, aligned_turns)
+        ):
+            del sentence, gender  # preserve 1:1 parity with the JSON ordering
+            records.append(
+                UtteranceRecord(
                     split=split,
+                    session=f"Session{session_num}",
+                    dialogue_id=dialogue_id,
+                    utterance_id=utterance_index,
+                    turn_name=transcript_turn.turn_name,
+                    emotion=label_id_to_name(int(label)),
+                    wav_path=transcript_turn.wav_path,
                 )
             )
 
@@ -261,18 +352,19 @@ def main() -> None:
     feature_level = getattr(opensmile.FeatureLevel, args.feature_level)
     smile = opensmile.Smile(feature_set=feature_set, feature_level=feature_level)
 
+    repo_root = Path(__file__).resolve().parent
     split_configs = {
-        "train": [1, 2, 3, 4],
-        "valid": [1, 2, 3, 4],
-        "test": [5],
+        "train": repo_root / "data" / "iemocap.train.json",
+        "valid": repo_root / "data" / "iemocap.valid.json",
+        "test": repo_root / "data" / "iemocap.test.json",
     }
 
-    for split, session_nums in split_configs.items():
-        logger.info(f"Building {split} records from sessions {session_nums}")
+    for split, split_json_path in split_configs.items():
+        logger.info(f"Building {split} records from {split_json_path}")
         records = build_split_records(
             iemocap_root=iemocap_root,
             split=split,
-            session_nums=session_nums,
+            split_json_path=split_json_path,
             valid_dialogue_ids=valid_dialogue_ids,
         )
 
