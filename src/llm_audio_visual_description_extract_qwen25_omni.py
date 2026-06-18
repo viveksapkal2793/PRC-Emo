@@ -6,6 +6,8 @@ import sys
 import time
 import traceback
 import wave
+from pathlib import Path
+import logging
 from typing import Dict, Iterable, List, Optional, Tuple
 
 os.environ.setdefault("NCCL_P2P_DISABLE", "1")
@@ -13,6 +15,7 @@ os.environ.setdefault("NCCL_IB_DISABLE", "1")
 os.environ.setdefault("TORCH_CUDNN_V8_API_DISABLED", "1")
 
 import torch
+import pandas as pd
 from tqdm import tqdm
 from transformers import BitsAndBytesConfig
 
@@ -43,6 +46,7 @@ DEFAULT_AUDIO_DIRS = {
     "valid": "/scratch/data/bikash_rs/Vivek/dataset/MELD_audio/dev",
     "test": "/scratch/data/bikash_rs/Vivek/dataset/MELD_audio/test",
 }
+DEFAULT_IEMOCAP_ROOT = "/scratch/data/bikash_rs/Vivek/dataset/IEMOCAP_full_release"
 
 NO_VISUAL_DESCRIPTION = "No visual description available."
 NO_AUDIO_DESCRIPTION = "No audio description available."
@@ -167,18 +171,74 @@ class BatchPreprocessorLLMAudioVisualDescriptions:
         return entries
 
 
+def load_iemocap_feature_rows(feature_csv_path: str, split: str, logger: logging.Logger):
+    df = pd.read_csv(feature_csv_path)
+    logger.info(f"✓ Loaded IEMOCAP feature CSV with {len(df)} rows from {feature_csv_path}")
+    if "split" in df.columns:
+        df = df[df["split"].astype(str).str.lower() == split].copy()
+    if "emotion" in df.columns:
+        emotion_keep = {"neutral", "surprise", "fear", "sadness", "joy", "disgust", "anger", "happy", "sad", "neutral", "angry", "excited", "frustrated", "neu", "fru", "ang", "exc", "hap"}
+        df = df[df["emotion"].astype(str).str.lower().isin(emotion_keep)].copy()
+    if "dialogue_id" not in df.columns or "utterance_id" not in df.columns or "turn_name" not in df.columns:
+        raise ValueError(f"IEMOCAP feature CSV must contain dialogue_id, utterance_id and turn_name columns: {feature_csv_path}")
+    df["utterance_id"] = df["utterance_id"].astype(int)
+    df = df.sort_values(["dialogue_id", "utterance_id"]).reset_index(drop=True)
+    return df
+
+
+def build_iemocap_media_path(iemocap_root: str, dialogue_id: str, turn_name: str, suffix: str):
+    session_num = int(dialogue_id[3:5])
+    media_subdir = "avi_active_mp4" if suffix == "mp4" else "wav"
+    return os.path.join(
+        iemocap_root,
+        f"Session{session_num}",
+        "sentences",
+        media_subdir,
+        dialogue_id,
+        f"{turn_name}.{suffix}",
+    )
+
+
+def build_iemocap_entries(raw_data, feature_rows, split: str):
+    conversation_lookup = {sample["s_id"]: sample for sample in raw_data}
+    entries = []
+    for _, row in feature_rows.iterrows():
+        conv_id = str(row["dialogue_id"])
+        utter_idx = int(row["utterance_id"])
+        sample = conversation_lookup.get(conv_id)
+        if sample is None:
+            continue
+        if utter_idx >= len(sample["sentences"]):
+            continue
+        speaker_list = sample.get("genders") or sample.get("speakers") or []
+        speaker = speaker_list[utter_idx] if utter_idx < len(speaker_list) else f"SPEAKER_{utter_idx}"
+        tagged_utt = f'{speaker}: "{sample["sentences"][utter_idx]}"'
+        entries.append(
+            {
+                "conv_id": conv_id,
+                "utter_idx": utter_idx,
+                "utterance": tagged_utt,
+                "type_data": split,
+                "all_speakers": speaker_list,
+                "turn_name": str(row["turn_name"]),
+            }
+        )
+    return entries
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Extract MELD visual and audio descriptions with Qwen2.5-Omni."
     )
     parser.add_argument("--model_path", type=str, default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--dataset", type=str, default="meld", choices=["meld", "iemocap"], help="Dataset to process.")
     parser.add_argument("--data_folder", type=str, default=DEFAULT_DATA_FOLDER)
     parser.add_argument("--output_folder", type=str, default=DEFAULT_DATA_FOLDER)
     parser.add_argument("--splits", nargs="+", default=["valid", "test", "train"], choices=["train", "valid", "test"])
     parser.add_argument("--debug", action="store_true", help="Process only 10 train utterances and log per-utterance time.")
     parser.add_argument("--debug_utterances", type=int, default=10)
     parser.add_argument("--max_media_seconds", type=float, default=30.0)
-    parser.add_argument("--video_num_frames", type=int, default=4, help="Lower is faster; 4 is a good quality/speed default.")
+    parser.add_argument("--video_num_frames", type=int, default=8, help="Lower is faster; 4 is a good quality/speed default.")
     parser.add_argument("--video_fps", type=float, default=None, help="Optional FPS sampling. If set, overrides dense loading.")
     parser.add_argument("--max_new_tokens", type=int, default=96)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -197,6 +257,8 @@ def parse_args():
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--cuda_visible_devices", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--iemocap_root", type=str, default=DEFAULT_IEMOCAP_ROOT)
+    # parser.add_argument("--iemocap_feature_csv_dir", type=str, default=DEFAULT_IEMOCAP_FEATURE_CSV_DIR)
     parser.add_argument("--meld_train_video_dir", type=str, default=DEFAULT_VIDEO_DIRS["train"])
     parser.add_argument("--meld_valid_video_dir", type=str, default=DEFAULT_VIDEO_DIRS["valid"])
     parser.add_argument("--meld_test_video_dir", type=str, default=DEFAULT_VIDEO_DIRS["test"])
@@ -461,7 +523,7 @@ def load_model_and_processor(args):
 
 
 def init_output_for_conversation(sample):
-    speakers = sample.get("speakers", [])
+    speakers = sample.get("speakers") or sample.get("genders") or []
     utterances = [
         f"{speaker}: {text}" if speakers else text
         for speaker, text in zip(speakers, sample["sentences"])
@@ -592,6 +654,74 @@ def prepare_generation_items(entries, output, args, video_dirs, audio_dirs, medi
     return items_by_utterance
 
 
+def prepare_generation_items_iemocap(entries, output, args, iemocap_root: str):
+    items_by_utterance = []
+    media_cache: Dict[Tuple[str, str], Tuple[bool, str, Optional[float]]] = {}
+
+    for entry in entries:
+        conv_id = entry["conv_id"]
+        utter_idx = entry["utter_idx"]
+        type_data = entry["type_data"]
+        utterance = entry["utterance"]
+        turn_name = entry["turn_name"]
+
+        visual_prompt = VISUAL_PROMPT_TEMPLATE.format(utt=utterance)
+        audio_prompt = AUDIO_PROMPT_TEMPLATE.format(utt=utterance)
+        pred = output[conv_id]["emotion_predictions"][utter_idx]
+        pred["visual_prompt"] = visual_prompt
+        pred["audio_prompt"] = audio_prompt
+
+        video_path = build_iemocap_media_path(iemocap_root, conv_id, turn_name, "mp4")
+        audio_path = build_iemocap_media_path(iemocap_root, conv_id, turn_name, "wav")
+        pred["media_dialogue_id"] = conv_id
+        pred["video_path"] = video_path
+        pred["audio_path"] = audio_path
+
+        if pred.get("visual_status") == "generated" and pred.get("visual_description"):
+            video_item = None
+        else:
+            video_key = ("video", video_path)
+            if video_key not in media_cache:
+                media_cache[video_key] = validate_video_file(video_path, args.max_media_seconds)
+            video_valid, video_reason, video_duration = media_cache[video_key]
+            pred["visual_media_duration"] = video_duration
+            if video_valid:
+                video_item = {
+                    "conv_id": conv_id,
+                    "utter_idx": utter_idx,
+                    "modality": "video",
+                    "messages": build_messages(visual_prompt, "video", video_path),
+                }
+            else:
+                video_item = None
+                pred["visual_description"] = NO_VISUAL_DESCRIPTION
+                pred["visual_status"] = video_reason
+
+        if pred.get("audio_status") == "generated" and pred.get("audio_description"):
+            audio_item = None
+        else:
+            audio_key = ("audio", audio_path)
+            if audio_key not in media_cache:
+                media_cache[audio_key] = validate_audio_file(audio_path, args.max_media_seconds)
+            audio_valid, audio_reason, audio_duration = media_cache[audio_key]
+            pred["audio_media_duration"] = audio_duration
+            if audio_valid:
+                audio_item = {
+                    "conv_id": conv_id,
+                    "utter_idx": utter_idx,
+                    "modality": "audio",
+                    "messages": build_messages(audio_prompt, "audio", audio_path),
+                }
+            else:
+                audio_item = None
+                pred["audio_description"] = NO_AUDIO_DESCRIPTION
+                pred["audio_status"] = audio_reason
+
+        items_by_utterance.append((video_item, audio_item))
+
+    return items_by_utterance
+
+
 def process_items_per_utterance(model, processor, output, items_by_utterance, args, output_path):
     processed_utterances = 0
     for visual_item, audio_item in tqdm(items_by_utterance, desc="Utterances"):
@@ -647,11 +777,13 @@ def process_items_batched_by_modality(model, processor, output, items_by_utteran
 def output_path_for_split(args, split):
     model_name = os.path.basename(os.path.normpath(args.model_path))
     debug_suffix = "_debug" if args.debug else ""
-    return os.path.join(args.output_folder, f"{dataset_name}.{split}_{prompt_type}_{model_name}{debug_suffix}.json")
+    return os.path.join(args.output_folder, f"{args.dataset}.{split}_{prompt_type}_{model_name}{debug_suffix}.json")
 
 
 def main():
     args = parse_args()
+    global dataset_name
+    dataset_name = args.dataset
     if args.cuda_visible_devices is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
     torch.manual_seed(args.seed)
@@ -667,9 +799,10 @@ def main():
     video_dirs = get_video_dirs(args)
     audio_dirs = get_audio_dirs(args)
     media_id_offsets = get_media_id_offsets(args)
+    repo_root = str(Path(__file__).resolve().parent.parent)
 
     for split in args.splits:
-        data_name_pattern = f"{dataset_name}.{split}"
+        data_name_pattern = f"{args.dataset}.{split}"
         raw_path = os.path.join(args.data_folder, f"{data_name_pattern}.json")
         output_path = output_path_for_split(args, split)
 
@@ -677,9 +810,20 @@ def main():
         for sample in raw_data:
             sample["type_data"] = split
 
-        selected_limit = args.debug_utterances if args.debug else None
-        entries = data_preprocessor.preprocess(raw_data, selected_utterance_limit=selected_limit)
-        entry_keys = {(entry["conv_id"], entry["utter_idx"]) for entry in entries}
+        if args.dataset == "meld":
+            selected_limit = args.debug_utterances if args.debug else None
+            entries = data_preprocessor.preprocess(raw_data, selected_utterance_limit=selected_limit)
+            entry_keys = {(entry["conv_id"], entry["utter_idx"]) for entry in entries}
+        elif args.dataset == "iemocap":
+            feature_csv_path = os.path.join(repo_root, f"iemocap_{split}_opensmile_utterance_wise.csv")
+            logger = logging.getLogger(__name__)
+            feature_rows = load_iemocap_feature_rows(feature_csv_path, split, logger)
+            entries = build_iemocap_entries(raw_data, feature_rows, split)
+            if args.debug:
+                entries = entries[: args.debug_utterances]
+            entry_keys = {(entry["conv_id"], entry["utter_idx"]) for entry in entries}
+        else:
+            raise ValueError(f"Unsupported dataset: {args.dataset}")
 
         if os.path.exists(output_path) and not args.overwrite:
             output = json.load(open(output_path, encoding="utf-8"))
@@ -694,7 +838,10 @@ def main():
             if conv_id not in output:
                 output[conv_id] = init_output_for_conversation(sample)
 
-        items_by_utterance = prepare_generation_items(entries, output, args, video_dirs, audio_dirs, media_id_offsets)
+        if args.dataset == "meld":
+            items_by_utterance = prepare_generation_items(entries, output, args, video_dirs, audio_dirs, media_id_offsets)
+        else:
+            items_by_utterance = prepare_generation_items_iemocap(entries, output, args, args.iemocap_root)
         if args.batch_by_modality:
             process_items_batched_by_modality(model, processor, output, items_by_utterance, args, output_path)
         else:

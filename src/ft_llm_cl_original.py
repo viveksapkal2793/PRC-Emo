@@ -309,6 +309,10 @@ def build_user_prompt(user_text: str, args) -> str:
         return (
             f'{prefix}, {feature_text}, which emotional label of {target_speaker} in the utterance "{target_utterance}".'
         )
+    
+    if not feature_bits and not selection["include_context"]:
+        return f'Which emotion label of {target_speaker} in the utterance "{target_utterance}".'
+    
     return f'{prefix}, which emotional label of {target_speaker} in the utterance "{target_utterance}".'
 
 
