@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -1334,18 +1335,36 @@ def get_section_suffix(args: argparse.Namespace) -> str:
     return "_".join(section_bits) if section_bits else "utt"
 
 
+def get_model_tag(args: argparse.Namespace) -> str:
+    path_text = str(args.model_path).lower()
+    if "f2llm" in path_text:
+        return "f2llm_4b"
+    if "0_6b" in path_text or "0.6b" in path_text or "0-6b" in path_text:
+        return "qwen3_embedding_0_6b"
+    if "4b" in path_text:
+        return "qwen3_embedding_4b"
+    if "8b" in path_text:
+        return "qwen3_embedding_8b"
+    return Path(args.model_path).name.replace("-", "_").replace(".", "_")
+
+
+def get_timestamp_suffix() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
 def get_run_stem(args: argparse.Namespace) -> str:
-    return f"qwen3_embedding_8b_{args.dataset}_mlp_{args.num_labels}cls_{get_section_suffix(args)}"
+    return f"{get_model_tag(args)}_{args.dataset}_mlp_{args.num_labels}cls_{get_section_suffix(args)}"
 
 
 def save_checkpoint(model: nn.Module, args: argparse.Namespace, labels: Sequence[str], embedding_model=None) -> Path:
     save_dir = Path(args.output_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{get_run_stem(args)}.pt"
+    run_stem = f"{get_run_stem(args)}_{get_timestamp_suffix()}"
+    filename = f"{run_stem}.pt"
     path = save_dir / filename
     lora_adapter_path = None
     if args.lora_contrastive_finetune and embedding_model is not None and hasattr(embedding_model, "save_pretrained"):
-        lora_adapter_path = save_dir / f"{get_run_stem(args)}_lora_adapter"
+        lora_adapter_path = save_dir / f"{run_stem}_lora_adapter"
         embedding_model.save_pretrained(lora_adapter_path)
         print(f"Saved LoRA adapter to {lora_adapter_path}")
     model_type = "mlp"
@@ -1526,7 +1545,7 @@ def save_embedding_analysis(
 
     output_dir = Path("/scratch/data/bikash_rs/Vivek/PRC-Emo/analysis/embed_analysis")
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{get_run_stem(args)}_embedding_analysis.png"
+    output_path = output_dir / f"{get_run_stem(args)}_{get_timestamp_suffix()}_embedding_analysis.png"
     fig.savefig(output_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved embedding analysis visualization to {output_path}")
@@ -1617,6 +1636,20 @@ def get_labels(args: argparse.Namespace) -> List[str]:
     return labels
 
 
+def infer_embedding_dim_from_model_path(model_path: str, explicit_embedding_dim: Optional[int] = None) -> int:
+    if explicit_embedding_dim is not None:
+        return int(explicit_embedding_dim)
+
+    path_text = str(model_path).lower()
+    if "0_6b" in path_text or "0.6b" in path_text or "0-6b" in path_text:
+        return 1024
+    if "f2llm" in path_text or "4b" in path_text:
+        return 2560
+    if "8b" in path_text:
+        return 4096
+    return 4096
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Qwen3-Embedding-8B + MLP emotion classifier.")
     parser.add_argument("--mode", choices=["train_eval", "train", "eval"], default="train_eval")
@@ -1629,7 +1662,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", default="/scratch/data/bikash_rs/Vivek/PRC-Emo/mlp")
     parser.add_argument("--label_names", default="", help="Comma-separated labels in class-id order.")
     parser.add_argument("--num_labels", type=int, default=None)
-    parser.add_argument("--embedding_dim", type=int, default=4096)
+    parser.add_argument(
+        "--embedding_dim",
+        type=int,
+        default=None,
+        help="Embedding dimension override. Defaults to the width inferred from --model_path.",
+    )
     parser.add_argument("--context_window", type=int, default=5, help="Used only for non-prompt dialogue JSON files.")
 
     parser.add_argument("--include_explicit_emotion", action="store_true")
@@ -1724,6 +1762,7 @@ def parse_args() -> argparse.Namespace:
         raise ValueError("--prototype_fixed_alpha must be between 0 and 1.")
     if args.prototype_warmup_epochs < 0:
         raise ValueError("--prototype_warmup_epochs must be non-negative.")
+    args.embedding_dim = infer_embedding_dim_from_model_path(args.model_path, args.embedding_dim)
     if args.proj_supcon:
         args.l2_normalize = True
     return args
