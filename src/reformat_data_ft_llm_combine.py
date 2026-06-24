@@ -256,18 +256,24 @@ def preprocess_desc_speaker(str_in):
     str_out = re.sub(r" {2,}", " ",  str_in)
     return str_out
 
-def load_dialogue_visual_expressions(folder_data, d_type):
+def load_dialogue_visual_expressions(folder_data, d_type, data_name=None):
     """Load split-specific OpenFace visual expression annotations if available."""
     split_name_map = {
         "train": "train",
-        "valid": "dev",
+        "valid": "valid" if data_name == "iemocap" else "dev",
         "test": "test",
     }
     split_name = split_name_map.get(d_type)
     if split_name is None:
         return {}
 
-    visual_path = os.path.join(folder_data, f"{split_name}_dialogue_visual_expressions.json")
+    if data_name == "iemocap":
+        visual_path = os.path.join(
+            folder_data,
+            f"iemocap_{split_name}_openface_utterance_wise_visual_descriptions.json",
+        )
+    else:
+        visual_path = os.path.join(folder_data, f"{split_name}_dialogue_visual_expressions.json")
     if not os.path.exists(visual_path):
         print(f" Visual expression file not found: {visual_path}")
         return {}
@@ -275,18 +281,24 @@ def load_dialogue_visual_expressions(folder_data, d_type):
     with open(visual_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def load_dialogue_audio_descriptions(folder_data, d_type):
+def load_dialogue_audio_descriptions(folder_data, d_type, data_name=None):
     """Load split-specific audio description annotations if available."""
     split_name_map = {
         "train": "train",
-        "valid": "dev",
+        "valid": "valid" if data_name == "iemocap" else "dev",
         "test": "test",
     }
     split_name = split_name_map.get(d_type)
     if split_name is None:
         return {}
 
-    audio_path = os.path.join(folder_data, f"opensmile_{split_name}_features_audio_descriptions.json")
+    if data_name == "iemocap":
+        audio_path = os.path.join(
+            folder_data,
+            f"iemocap_{split_name}_opensmile_utterance_wise_audio_descriptions.json",
+        )
+    else:
+        audio_path = os.path.join(folder_data, f"opensmile_{split_name}_features_audio_descriptions.json")
     if not os.path.exists(audio_path):
         print(f" Audio description file not found: {audio_path}")
         return {}
@@ -858,7 +870,7 @@ def gen_ImplicitEmotion_V3_prompting_messages(data_name, conv, around_window, s_
         visual_expression_msg = ""
         if use_visual_exp and visual_expression_data is not None:
             visual_info = visual_expression_data.get(str(s_id), {})
-            visual_expressions = visual_info.get("visual_expressions", [])
+            visual_expressions = visual_info.get("visual_expressions") or visual_info.get("visual_descriptions", [])
             current_visual_expression = (
                 visual_expressions[i]
                 if i < len(visual_expressions)
@@ -1126,12 +1138,12 @@ def process(paths_folder_preprocessed_data, args):
         raw_data = f'{folder_data}/{data_name}.{d_type}.json'
         org_data = json.load(open(raw_data)) # ; org_data = dict([(k,v) for k,v in org_data.items()][:10])
         visual_expression_data = (
-            load_dialogue_visual_expressions(folder_data, d_type)
+            load_dialogue_visual_expressions(folder_data, d_type, data_name=data_name)
             if prompting_type == 'ImplicitEmotion_V3' and multimodal_config["use_visual_exp"]
             else None
         )
         audio_description_data = (
-            load_dialogue_audio_descriptions(folder_data, d_type)
+            load_dialogue_audio_descriptions(folder_data, d_type, data_name=data_name)
             if prompting_type == 'ImplicitEmotion_V3' and multimodal_config["use_audio_exp"]
             else None
         )
