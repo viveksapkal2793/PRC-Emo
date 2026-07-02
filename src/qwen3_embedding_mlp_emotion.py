@@ -1,4 +1,5 @@
 import argparse
+from collections import deque
 import json
 import os
 import random
@@ -6,7 +7,7 @@ import re
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -878,6 +879,34 @@ class BalancedPairBatchSampler(BatchSampler):
         return self.num_batches
 
 
+class ClassBalancedMemoryBank:
+    def __init__(self, num_labels: int, memory_per_class: int):
+        if memory_per_class < 1:
+            raise ValueError("--memory_per_class must be at least 1.")
+        self.num_labels = num_labels
+        self.memory_per_class = memory_per_class
+        self.embedding_queues: Dict[int, Deque[torch.Tensor]] = {
+            class_id: deque(maxlen=memory_per_class) for class_id in range(num_labels)
+        }
+        self.label_queues: Dict[int, Deque[int]] = {
+            class_id: deque(maxlen=memory_per_class) for class_id in range(num_labels)
+        }
+
+    def get_class_embeddings(self, class_id: int, device: torch.device) -> torch.Tensor:
+        queue = self.embedding_queues[int(class_id)]
+        if not queue:
+            return torch.empty((0, 0), device=device)
+        return torch.stack(list(queue), dim=0).to(device=device)
+
+    def enqueue(self, embeddings: torch.Tensor, labels: torch.Tensor) -> None:
+        norm_embeddings = F.normalize(embeddings.detach().float(), p=2, dim=1)
+        norm_labels = labels.detach().long()
+        for embedding, label in zip(norm_embeddings, norm_labels):
+            class_id = int(label.item())
+            self.embedding_queues[class_id].append(embedding)
+            self.label_queues[class_id].append(class_id)
+
+
 def supervised_contrastive_loss(
     embeddings: torch.Tensor,
     labels: torch.Tensor,
@@ -905,6 +934,68 @@ def supervised_contrastive_loss(
     log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-12))
     mean_log_prob_pos = (positive_mask * log_prob).sum(dim=1) / positives_per_anchor.clamp_min(1.0)
     return -mean_log_prob_pos[valid_anchor_mask].mean()
+
+
+def memory_bank_local_supcon_loss(
+    embeddings: torch.Tensor,
+    labels: torch.Tensor,
+    temperature: float,
+    memory_bank: ClassBalancedMemoryBank,
+    top_k_pos: int,
+    top_m_neg: int,
+) -> Optional[torch.Tensor]:
+    if embeddings.size(0) == 0:
+        return embeddings.new_tensor(0.0)
+    if top_k_pos < 1:
+        raise ValueError("--top_k_pos must be at least 1.")
+    if top_m_neg < 1:
+        raise ValueError("--top_m_neg must be at least 1.")
+
+    norm_embeddings = F.normalize(embeddings, p=2, dim=1)
+    class_embeddings = {
+        class_id: memory_bank.get_class_embeddings(class_id, norm_embeddings.device)
+        for class_id in range(memory_bank.num_labels)
+    }
+
+    losses = []
+    for idx, anchor in enumerate(norm_embeddings):
+        class_id = int(labels[idx].item())
+        positive_bank = class_embeddings.get(class_id)
+        if positive_bank is None or positive_bank.size(0) < top_k_pos:
+            return None
+
+        negative_candidates = [
+            queued_embeddings
+            for other_class_id, queued_embeddings in class_embeddings.items()
+            if other_class_id != class_id and queued_embeddings.numel() > 0
+        ]
+        if not negative_candidates:
+            return None
+        negative_bank = torch.cat(negative_candidates, dim=0)
+        if negative_bank.size(0) < top_m_neg:
+            return None
+
+        positive_similarity = torch.matmul(positive_bank, anchor)
+        top_positive_values = torch.topk(
+            positive_similarity,
+            k=min(top_k_pos, positive_similarity.size(0)),
+            largest=True,
+        ).values / temperature
+
+        negative_similarity = torch.matmul(negative_bank, anchor)
+        top_negative_values = torch.topk(
+            negative_similarity,
+            k=min(top_m_neg, negative_similarity.size(0)),
+            largest=True,
+        ).values / temperature
+
+        numerator = torch.logsumexp(top_positive_values, dim=0)
+        denominator = torch.logsumexp(torch.cat([top_positive_values, top_negative_values], dim=0), dim=0)
+        losses.append(-(numerator - denominator))
+
+    if not losses:
+        return embeddings.new_tensor(0.0)
+    return torch.stack(losses).mean()
 
 
 def _train_step_prediction(model: nn.Module, embeddings: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -1015,6 +1106,7 @@ def train_lora_contrastive(
     prototype_manager = None
     prototype_supcon_loss = None
     prototype_refresh_loader = None
+    memory_bank = None
     if args.prototype_learning:
         classifier = FusionClassifier(
             args.embedding_dim,
@@ -1027,6 +1119,8 @@ def train_lora_contrastive(
         prototype_supcon_loss = SamplePrototypeSupConLoss(args.prototype_temperature).to(device)
     else:
         classifier = EmotionMLP(args.embedding_dim, args.num_labels, args.dropout).to(device)
+    if args.use_memory_bank_supcon:
+        memory_bank = ClassBalancedMemoryBank(args.num_labels, args.memory_per_class)
     train_dataset = TextEmotionDataset(train_samples, train_labels)
     class_counts = torch.bincount(train_labels, minlength=args.num_labels)
     print(f"LoRA SupCon class counts: {class_counts.tolist()}")
@@ -1101,6 +1195,8 @@ def train_lora_contrastive(
         total_supcon = 0.0
         total_proto_supcon = 0.0
         total_loss = 0.0
+        memory_bank_batches = 0
+        fallback_supcon_batches = 0
         total_correct = 0
         total_seen = 0
 
@@ -1110,7 +1206,23 @@ def train_lora_contrastive(
             y = batch.pop("labels")
             embeddings = encode_batch(batch, embedding_model, args)
             ce_loss, predictions = _train_step_prediction(classifier, embeddings, y)
-            supcon_loss = supervised_contrastive_loss(embeddings, y, args.supcon_temperature)
+            if memory_bank is not None:
+                memory_bank_supcon = memory_bank_local_supcon_loss(
+                    embeddings,
+                    y,
+                    args.supcon_temperature,
+                    memory_bank,
+                    args.top_k_pos,
+                    args.top_m_neg,
+                )
+                if memory_bank_supcon is None:
+                    supcon_loss = supervised_contrastive_loss(embeddings, y, args.supcon_temperature)
+                    fallback_supcon_batches += 1
+                else:
+                    supcon_loss = memory_bank_supcon
+                    memory_bank_batches += 1
+            else:
+                supcon_loss = supervised_contrastive_loss(embeddings, y, args.supcon_temperature)
             if args.prototype_learning and prototype_supcon_loss is not None and isinstance(classifier, FusionClassifier):
                 proto_supcon_value = prototype_supcon_loss(
                     embeddings,
@@ -1136,6 +1248,8 @@ def train_lora_contrastive(
             total_loss += loss.item() * y.size(0)
             total_correct += (predictions == y).sum().item()
             total_seen += y.size(0)
+            if memory_bank is not None:
+                memory_bank.enqueue(embeddings, y)
 
         train_loss = total_loss / max(total_seen, 1)
         train_ce = total_ce / max(total_seen, 1)
@@ -1159,12 +1273,14 @@ def train_lora_contrastive(
             print(
                 f"Epoch {epoch}: train_loss={train_loss:.4f} ce={train_ce:.4f} "
                 f"supcon={train_supcon:.4f} proto_supcon={train_proto_supcon:.4f} train_acc={train_acc:.4f}"
+                f"{f' memory_bank_batches={memory_bank_batches} fallback_batches={fallback_supcon_batches}' if memory_bank is not None else ''}"
             )
         else:
             print(
                 f"Epoch {epoch}: train_loss={train_loss:.4f} ce={train_ce:.4f} "
                 f"supcon={train_supcon:.4f} proto_supcon={train_proto_supcon:.4f} train_acc={train_acc:.4f} "
                 f"valid_loss={valid_loss:.4f} valid_acc={valid_acc:.4f}"
+                f"{f' memory_bank_batches={memory_bank_batches} fallback_batches={fallback_supcon_batches}' if memory_bank is not None else ''}"
             )
 
     if best_state is not None:
@@ -1716,6 +1832,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--supcon_lambda", type=float, default=0.1)
     parser.add_argument("--supcon_temperature", type=float, default=0.07)
+    parser.add_argument("--use_memory_bank_supcon", action="store_true")
+    parser.add_argument("--memory_per_class", type=int, default=128)
+    parser.add_argument("--top_k_pos", type=int, default=2)
+    parser.add_argument("--top_m_neg", type=int, default=5)
     parser.add_argument("--prototype_learning", action="store_true")
     parser.add_argument("--prototype_supcon_lambda", type=float, default=0.1)
     parser.add_argument("--prototype_temperature", type=float, default=0.07)
@@ -1754,10 +1874,18 @@ def parse_args() -> argparse.Namespace:
         )
     if args.proj_supcon and args.lora_contrastive_finetune:
         raise ValueError("--proj_supcon cannot be combined with --lora_contrastive_finetune.")
+    if args.use_memory_bank_supcon and not args.lora_contrastive_finetune:
+        raise ValueError("--use_memory_bank_supcon requires --lora_contrastive_finetune.")
     if args.prototype_learning and args.proj_supcon:
         raise ValueError("--prototype_learning is supported only with the LoRA contrastive fine-tuning pipeline.")
     if args.prototype_learning and not args.lora_contrastive_finetune:
         raise ValueError("--prototype_learning requires --lora_contrastive_finetune.")
+    if args.memory_per_class < 1:
+        raise ValueError("--memory_per_class must be at least 1.")
+    if args.top_k_pos < 1:
+        raise ValueError("--top_k_pos must be at least 1.")
+    if args.top_m_neg < 1:
+        raise ValueError("--top_m_neg must be at least 1.")
     if args.prototype_fixed_alpha is not None and not (0.0 <= args.prototype_fixed_alpha <= 1.0):
         raise ValueError("--prototype_fixed_alpha must be between 0 and 1.")
     if args.prototype_warmup_epochs < 0:
