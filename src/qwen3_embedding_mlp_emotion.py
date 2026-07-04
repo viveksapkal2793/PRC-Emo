@@ -1092,6 +1092,85 @@ def train_mlp(
     return model
 
 
+def train_frozen_prototype_mlp(
+    train_embeddings: torch.Tensor,
+    train_labels: torch.Tensor,
+    valid_embeddings: Optional[torch.Tensor],
+    valid_labels: Optional[torch.Tensor],
+    args: argparse.Namespace,
+) -> FusionClassifier:
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.force_cpu_mlp else "cpu")
+    model = FusionClassifier(
+        args.embedding_dim,
+        args.num_labels,
+        args.dropout,
+        args.prototype_temperature,
+        args.prototype_fixed_alpha,
+    ).to(device)
+    prototype_manager = PrototypeManager(args)
+    prototype_vectors, prototype_labels = prototype_manager.recompute(
+        train_embeddings,
+        train_labels,
+        args.num_labels,
+    )
+    model.set_prototypes(
+        prototype_vectors.to(device=device, dtype=torch.float32),
+        prototype_labels.to(device=device, dtype=torch.long),
+    )
+    print(f"Prototype update: total_prototypes={int(prototype_labels.numel())}")
+
+    optimizer = torch.optim.AdamW(
+        [param for param in model.parameters() if param.requires_grad],
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
+    train_loader = DataLoader(
+        TensorDataset(train_embeddings, train_labels),
+        batch_size=args.mlp_batch_size,
+        shuffle=True,
+    )
+
+    best_state = None
+    best_valid_loss = float("inf")
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        total_loss = 0.0
+        total_correct = 0
+        total_seen = 0
+        for x, y in tqdm(train_loader, desc=f"FrozenProto epoch {epoch}/{args.epochs}"):
+            x = x.to(device)
+            y = y.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            loss, predictions = _train_step_prediction(model, x, y)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item() * y.size(0)
+            total_correct += (predictions == y).sum().item()
+            total_seen += y.size(0)
+        train_loss = total_loss / max(total_seen, 1)
+        train_acc = total_correct / max(total_seen, 1)
+
+        valid_loss = None
+        valid_acc = None
+        if valid_embeddings is not None and valid_labels is not None:
+            valid_loss, valid_acc, _ = predict_mlp(model, valid_embeddings, valid_labels, args)
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+        if valid_loss is None:
+            print(f"Epoch {epoch}: train_loss={train_loss:.4f} train_acc={train_acc:.4f}")
+        else:
+            print(
+                f"Epoch {epoch}: train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
+                f"valid_loss={valid_loss:.4f} valid_acc={valid_acc:.4f}"
+            )
+
+    if best_state is not None:
+        load_classifier_state(model, best_state)
+    return model
+
+
 def train_lora_contrastive(
     embedding_model,
     tokenizer,
@@ -1877,9 +1956,7 @@ def parse_args() -> argparse.Namespace:
     if args.use_memory_bank_supcon and not args.lora_contrastive_finetune:
         raise ValueError("--use_memory_bank_supcon requires --lora_contrastive_finetune.")
     if args.prototype_learning and args.proj_supcon:
-        raise ValueError("--prototype_learning is supported only with the LoRA contrastive fine-tuning pipeline.")
-    if args.prototype_learning and not args.lora_contrastive_finetune:
-        raise ValueError("--prototype_learning requires --lora_contrastive_finetune.")
+        raise ValueError("--prototype_learning cannot be combined with --proj_supcon.")
     if args.memory_per_class < 1:
         raise ValueError("--memory_per_class must be at least 1.")
     if args.top_k_pos < 1:
@@ -1980,7 +2057,10 @@ def main() -> None:
                 analysis_payloads["valid"] = (valid_samples, valid_embeddings, valid_y)
                 print_embedding_debug(valid_samples, valid_embeddings, args.debug_samples, "valid")
 
-            classifier = train_mlp(train_embeddings, train_y, valid_embeddings, valid_y, args)
+            if args.prototype_learning:
+                classifier = train_frozen_prototype_mlp(train_embeddings, train_y, valid_embeddings, valid_y, args)
+            else:
+                classifier = train_mlp(train_embeddings, train_y, valid_embeddings, valid_y, args)
 
         checkpoint_path = save_checkpoint(classifier, args, labels, embedding_model)
         args.checkpoint = str(checkpoint_path)
