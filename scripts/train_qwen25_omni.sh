@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=train_prc_emo_qwen25_omni
+#SBATCH --job-name=train_prc_emo_qwen25_omni_video_image
 #SBATCH --output=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.out
 #SBATCH --error=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.err
 #SBATCH --partition=dgx
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=2-00:00:00
 #SBATCH --qos=fatqos
@@ -25,7 +25,7 @@ EP=4
 BN=2
 CPE=1
 LR_SCHEDULER="linear"
-LR=2e-4
+LR=5e-5
 LORA_R=32
 TOPK=0
 WINDOW=5
@@ -77,7 +77,7 @@ MODEL_ID_0=$(basename "$MODEL_ID")
 
 for seed in 42;
 do
-python ./src/ft_llm_qwen25_omni.py --do_eval_dev --do_eval_test --do_train --curriculum --bucket_number ${BN} \
+python ./src/ft_llm_qwen25_omni_modalities.py --do_eval_dev --do_eval_test --do_train --curriculum --bucket_number ${BN} \
  --base_model_id $MODEL_ID --curriculum_update_epochs ${CPE} \
  --ft_model_id ${DATANAME}_${MODEL_ID_0}_ep${EP}_step${MAX_STEPS}_lrs-${LR_SCHEDULER}${LR}_${TOPK}shot_r${LORA_R}_w${WINDOW}_${PROMPT_TYPE}_seed${seed}_L${MAX_SEQ_LEN}_llmdesc${EXTRACT_PROMTING_LLM_ID}_ED${EVAL_DELAY}_omni \
  --lr_scheduler $LR_SCHEDULER --lr $LR --lora_r $LORA_R --max_steps $MAX_STEPS --epoch ${EP} \
@@ -86,9 +86,10 @@ python ./src/ft_llm_qwen25_omni.py --do_eval_dev --do_eval_test --do_train --cur
  --video_fps $VIDEO_FPS --generation_max_new_tokens $GENERATION_MAX_NEW_TOKENS \
  --per_device_train_batch_size $PER_DEVICE_TRAIN_BATCH_SIZE --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
  --optim $OPTIM --skip_invalid_media \
- --lora_target_modules "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj" \
- --meld_train_video_dir $MELD_TRAIN_VIDEO_DIR --meld_valid_video_dir $MELD_VALID_VIDEO_DIR --meld_test_video_dir $MELD_TEST_VIDEO_DIR \
- --meld_train_audio_dir $MELD_TRAIN_AUDIO_DIR --meld_valid_audio_dir $MELD_VALID_AUDIO_DIR --meld_test_audio_dir $MELD_TEST_AUDIO_DIR
+ --lora_target_modules "q_proj,k_proj,v_proj,o_proj" \
+ --video_input --image_input --preprocessed_data_suffix "_video_image_Aud_Vis_Omni.jsonl" --output_folder "./finetuned_llm_video_image/" \
+ --meld_train_video_dir $MELD_TRAIN_VIDEO_DIR --meld_valid_video_dir $MELD_VALID_VIDEO_DIR --meld_test_video_dir $MELD_TEST_VIDEO_DIR
+#  --meld_train_audio_dir $MELD_TRAIN_AUDIO_DIR --meld_valid_audio_dir $MELD_VALID_AUDIO_DIR --meld_test_audio_dir $MELD_TEST_AUDIO_DIR 
 done
 
 wait

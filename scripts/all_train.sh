@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=5_seed_train_prc_emo
+#SBATCH --job-name=5_seed_vis_exp_train_prc_emo
 #SBATCH --output=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.out
 #SBATCH --error=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.err
 #SBATCH --partition=dgx
@@ -61,9 +61,9 @@ EXTRACT_PROMTING_LLM_ID="qwen_3_14b"
 MAX_SEQ_LEN=2048 
 MAX_STEPS=-1
 EVAL_DELAY=100000
-OUTPUT_DIR="/scratch/data/bikash_rs/Vivek/PRC-Emo/5_seed_run_orig_reprod"
+OUTPUT_DIR="/scratch/data/bikash_rs/Vivek/PRC-Emo/5_seed_run_vis_reprod"
 
-RESULTS_ARCHIVE_DIR="/scratch/data/bikash_rs/Vivek/PRC-Emo/orig_results_reprod"
+RESULTS_ARCHIVE_DIR="/scratch/data/bikash_rs/Vivek/PRC-Emo/vis_exp_reprod"
 mkdir -p "$RESULTS_ARCHIVE_DIR"
 
 IFS='/' read -ra ADDR <<< "$MODEL_ID"

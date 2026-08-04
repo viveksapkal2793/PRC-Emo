@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=train_prc_emo
+#SBATCH --job-name=train_prc_emo_meld_orig_aud_vis_desc
 #SBATCH --output=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.out
 #SBATCH --error=/scratch/data/bikash_rs/Vivek/PRC-Emo/logs/%x_%j.err
 #SBATCH --partition=dgx
@@ -8,7 +8,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=12:00:00
 #SBATCH --qos=fatqos
 #SBATCH -D /scratch/data/bikash_rs/Vivek/PRC-Emo
 
@@ -73,7 +73,9 @@ python ./src/ft_llm_cl_original.py  --do_eval_dev --do_eval_test --do_train --cu
  --ft_model_id  ${DATANAME}_${MODEL_ID_0}_ep${EP}_step${MAX_STEPS}_lrs-${LR_SCHEDULER}${LR}_${TOPK}shot_r${LORA_R}_w${WINDOW}_${PROMPT_TYPE}_seed${seed}_L${MAX_SEQ_LEN}_llmdesc${EXTRACT_PROMTING_LLM_ID}_ED${EVAL_DELAY} \
  --lr_scheduler $LR_SCHEDULER --lr $LR   --lora_r $LORA_R --max_steps $MAX_STEPS --epoch ${EP} \
  --kshot $TOPK --window $WINDOW --data_name $DATANAME --prompting_type ${PROMPT_TYPE} --extract_prompting_llm_id $EXTRACT_PROMTING_LLM_ID \
- --re_gen_data --seed $seed  --max_seq_len $MAX_SEQ_LEN --eval_delay $EVAL_DELAY  --data_folder ./data/
+ --seed $seed  --max_seq_len $MAX_SEQ_LEN --eval_delay $EVAL_DELAY  --data_folder ./data/ --output_folder "./finetuned_llm_3/" \
+ --include_explicit_emotion --include_implicit_emotion --include_conversation_context --include_speaker_description --include_reference_similar_emotions \
+ --include_audio_description --include_visual_description --suffix "_Aud_Vis" 
 
 done
 
